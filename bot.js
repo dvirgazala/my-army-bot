@@ -41,7 +41,7 @@ async function askAI(userInput) {
     const options = {
         hostname: "generativelanguage.googleapis.com",
         // זו הכתובת המדויקת והמעודכנת ביותר:
-        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1beta/models/gemini-pro:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
