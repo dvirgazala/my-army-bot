@@ -40,13 +40,13 @@ async function askAI(userInput) {
 
     const options = {
         hostname: "generativelanguage.googleapis.com",
-        // שינינו מ-v1beta ל-v1 (גרסה יציבה יותר) ומ-gemini-1.5-flash לגרסה מלאה
+        // זו הכתובת המדויקת והמעודכנת ביותר:
         path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(postData),
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         },
     };
 
