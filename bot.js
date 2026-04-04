@@ -5,7 +5,7 @@ const http = require("http"); // הוספנו את זה לשרת הבסיסי
 
 // --- הגדרות מפתחות ---
 const TELEGRAM_TOKEN = "8684518091:AAFXwAcSFaRmCNGCkgdsHFq3cdmdZGaRn5I";
-const GEMINI_KEY = "AIzaSyD2dQLBoT8M8woG1yB3nPxSAsh7cyiRRO0";
+const GEMINI_KEY = "AIzaSyCtDgnWD0u5rrhnpaCCakohtVuCPIf0uH0";
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
