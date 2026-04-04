@@ -1,38 +1,36 @@
 const TelegramBot = require("node-telegram-bot-api");
-const fs = require("fs");
+const mongoose = require("mongoose");
 const https = require("https");
 const http = require("http");
 
-// --- משיכת מפתחות ממשתני הסביבה (אבטחה) ---
+// --- משיכת מפתחות ממשתני הסביבה ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_KEY;
+const MONGO_URI = process.env.MONGO_URI;
+
+// --- חיבור ל-MongoDB (הזיכרון הקבוע) ---
+mongoose.connect(MONGO_URI)
+    .then(() => console.log("✅ מחובר בהצלחה ל-MongoDB! הנתונים נשמרים בענן."))
+    .catch(err => console.error("❌ שגיאת חיבור למונגו:", err));
+
+// הגדרת מבנה הנתונים של חייל במסד הנתונים
+const soldierSchema = new mongoose.Schema({
+    name: { type: String, required: true, unique: true },
+    unit: String,
+    status: { type: String, default: "BASE" },
+    lastUpdate: { type: Date, default: Date.now }
+});
+
+const Soldier = mongoose.model("Soldier", soldierSchema);
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-const DB_FILE = "database.json";
-const COMPANY_FILE = "company.json";
-
-let soldiersStatus = {};
-let companyData = [];
-
-// טעינת נתונים
-if (fs.existsSync(DB_FILE)) {
-    try { soldiersStatus = JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) {}
-}
-if (fs.existsSync(COMPANY_FILE)) {
-    try { companyData = JSON.parse(fs.readFileSync(COMPANY_FILE)); } catch (e) {}
-}
-
-function saveAll() {
-    fs.writeFileSync(DB_FILE, JSON.stringify(soldiersStatus, null, 2));
-    fs.writeFileSync(COMPANY_FILE, JSON.stringify(companyData, null, 2));
-}
-
-async function askAI(userInput) {
-    const prompt = `You are a military clerk. Data: ${JSON.stringify(companyData)}. 
+// פונקציית AI לעיבוד הודעות
+async function askAI(userInput, allSoldiers) {
+    const prompt = `You are a military clerk. Current Soldiers Data: ${JSON.stringify(allSoldiers)}. 
     Return JSON only: {"type": "update", "updates": [{"name": "Name", "status": "STATUS"}]} OR {"type": "chat", "text": "Hebrew reply"}.
-    Status: HOME, BASE, HQ_MM1, HQ_MM2, HQ_MM3, HQ_MF, HQ_SMF, DRIVER, ASSIST.
-    User: "${userInput}"`;
+    Status options: HOME, BASE, HQ_MM1, HQ_MM2, HQ_MM3, HQ_MF, HQ_SMF, DRIVER, ASSIST.
+    User message: "${userInput}"`;
 
     const postData = JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
@@ -40,8 +38,7 @@ async function askAI(userInput) {
 
     const options = {
         hostname: "generativelanguage.googleapis.com",
-        // זו הכתובת שעובדת ב-100% עבור מודל ה-Flash המהיר:
-        path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -57,37 +54,34 @@ async function askAI(userInput) {
             res.on("end", () => {
                 try {
                     if (res.statusCode !== 200) {
-                        console.error("Google Error:", body);
-                        // אם זה עדיין נכשל, נסה להחזיר את השגיאה המקורית כדי שנבין מה קורה
-                        resolve({ type: "chat", text: `שגיאה מגוגל (${res.statusCode}). ודא שהמפתח ב-Environment תקין.` });
+                        resolve({ type: "chat", text: `שגיאת AI (${res.statusCode}).` });
                         return;
                     }
                     const parsed = JSON.parse(body);
-                    if (!parsed.candidates || !parsed.candidates[0]) {
-                         resolve({ type: "chat", text: "גוגל החזיר תשובה ריקה. נסה שוב." });
-                         return;
-                    }
                     const aiText = parsed.candidates[0].content.parts[0].text;
                     const jsonMatch = aiText.match(/\{[\s\S]*\}/);
                     resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
                 } catch (e) {
-                    resolve({ type: "chat", text: "שגיאה בפענוח הנתונים." });
+                    resolve({ type: "chat", text: "שגיאה בפענוח תשובת ה-AI." });
                 }
             });
         });
-        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת." }));
+        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת מול גוגל." }));
         req.write(postData);
         req.end();
     });
 }
 
-// פונקציית דוח תמונת מצב
-function buildStatusReport() {
+// בניית דוח תמונת מצב מתוך מסד הנתונים
+async function buildStatusReport() {
+    const allSoldiers = await Soldier.find({});
     let groups = { HQ_MF: [], HQ_SMF: [], HQ_MM1: [], HQ_MM2: [], HQ_MM3: [], DRIVER: [], ASSIST: [], BASE: [], HOME: [] };
-    for (let name in soldiersStatus) {
-        if (groups[soldiersStatus[name]]) groups[soldiersStatus[name]].push(name);
-    }
-    return `📍 *תמונת מצב פלוגתית:*
+    
+    allSoldiers.forEach(s => {
+        if (groups[s.status]) groups[s.status].push(s.name);
+    });
+
+    return `📍 *תמונת מצב פלוגתית (מענן):*
 ⭐ *חפ"ק:*
 • מ"פ: ${groups.HQ_MF.join(", ") || "-"} | סמ"פ: ${groups.HQ_SMF.join(", ") || "-"}
 • ממ1: ${groups.HQ_MM1.join(", ") || "-"} | ממ2: ${groups.HQ_MM2.join(", ") || "-"} | ממ3: ${groups.HQ_MM3.join(", ") || "-"}
@@ -97,47 +91,64 @@ function buildStatusReport() {
 _עודכן: ${new Date().toLocaleTimeString("he-IL")}_`;
 }
 
+// טיפול בהודעות נכנסות
 bot.on("message", async (msg) => {
     if (!msg.text) return;
     const text = msg.text.trim();
     const chatId = msg.chat.id;
 
+    // פקודת דוח
     if (text.includes("תמונת מצב") || text === "מי פה") {
-        bot.sendMessage(chatId, buildStatusReport(), { parse_mode: "Markdown" });
+        const report = await buildStatusReport();
+        bot.sendMessage(chatId, report, { parse_mode: "Markdown" });
         return;
     }
 
+    // עדכון סד"כ ראשוני (הוספת חיילים)
     if (text.includes("מחלקה") && text.includes(":")) {
         const lines = text.split("\n");
         let currentUnit = null;
-        lines.forEach((line) => {
-            if (line.includes(":")) currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
-            else if (currentUnit && line.trim()) {
+        for (const line of lines) {
+            if (line.includes(":")) {
+                currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
+            } else if (currentUnit && line.trim()) {
                 const name = line.trim();
-                companyData = companyData.filter((s) => s.name !== name);
-                companyData.push({ name, unit: currentUnit });
+                // עדכון או יצירה של חייל במונגו
+                await Soldier.findOneAndUpdate(
+                    { name: name },
+                    { unit: currentUnit },
+                    { upsert: true, new: true }
+                );
             }
-        });
-        saveAll();
-        bot.sendMessage(chatId, 'הסד"כ עודכן! 🫡');
+        }
+        bot.sendMessage(chatId, 'הסד"כ עודכן בבסיס הנתונים! 🫡');
         return;
     }
 
-    const aiResult = await askAI(text);
+    // שימוש ב-AI לעדכון סטטוסים או שיחה
+    const allSoldiers = await Soldier.find({});
+    const aiResult = await askAI(text, allSoldiers);
+
     if (aiResult.type === "update" && aiResult.updates) {
-        aiResult.updates.forEach((upd) => { if (upd.name) soldiersStatus[upd.name] = upd.status; });
-        saveAll();
-        bot.sendMessage(chatId, `קיבלתי, עדכנתי! 👍`);
+        for (const upd of aiResult.updates) {
+            if (upd.name) {
+                await Soldier.findOneAndUpdate(
+                    { name: upd.name },
+                    { status: upd.status, lastUpdate: Date.now() }
+                );
+            }
+        }
+        bot.sendMessage(chatId, `קיבלתי, הסטטוסים עודכנו בענן! 👍`);
     } else {
         bot.sendMessage(chatId, aiResult.text || "רות.");
     }
 });
 
-// שרת HTTP עבור Render
+// שרת לשמירה על הבוט בחיים ב-Render
 const port = process.env.PORT || 10000;
 http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot is Alive');
+    res.writeHead(200);
+    res.end('Bot is Alive and Persistent');
 }).listen(port);
 
-console.log("הבוט דרוך ומוכן ב-Ohio!");
+console.log("הבוט דרוך ב-Ohio ומחובר לענן MongoDB!");
