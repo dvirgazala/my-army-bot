@@ -41,7 +41,7 @@ async function askAI(userInput) {
     const options = {
         hostname: "generativelanguage.googleapis.com",
         // זו הכתובת שעובדת ב-100% עבור מודל ה-Flash המהיר:
-        path: `/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
