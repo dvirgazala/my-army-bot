@@ -40,13 +40,13 @@ async function askAI(userInput) {
 
     const options = {
         hostname: "generativelanguage.googleapis.com",
-        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        // שינינו מ-v1beta ל-v1 (גרסה יציבה יותר) ומ-gemini-1.5-flash לגרסה מלאה
+        path: `/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
             "Content-Length": Buffer.byteLength(postData),
-            // השורה הזו גורמת לגוגל לחשוב שאנחנו דפדפן כרום רגיל:
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         },
     };
 
@@ -58,19 +58,24 @@ async function askAI(userInput) {
                 try {
                     if (res.statusCode !== 200) {
                         console.error("Google Error:", body);
-                        resolve({ type: "chat", text: "גוגל עדיין חוסם. נסה לשנות Region ב-Render." });
+                        // אם זה עדיין נכשל, נסה להחזיר את השגיאה המקורית כדי שנבין מה קורה
+                        resolve({ type: "chat", text: `שגיאה מגוגל (${res.statusCode}). ודא שהמפתח ב-Environment תקין.` });
                         return;
                     }
                     const parsed = JSON.parse(body);
+                    if (!parsed.candidates || !parsed.candidates[0]) {
+                         resolve({ type: "chat", text: "גוגל החזיר תשובה ריקה. נסה שוב." });
+                         return;
+                    }
                     const aiText = parsed.candidates[0].content.parts[0].text;
                     const jsonMatch = aiText.match(/\{[\s\S]*\}/);
                     resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
                 } catch (e) {
-                    resolve({ type: "chat", text: "שגיאה בפענוח התשובה מה-AI." });
+                    resolve({ type: "chat", text: "שגיאה בפענוח הנתונים." });
                 }
             });
         });
-        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת מול גוגל." }));
+        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת." }));
         req.write(postData);
         req.end();
     });
