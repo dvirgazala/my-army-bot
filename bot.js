@@ -3,19 +3,18 @@ const mongoose = require("mongoose");
 const https = require("https");
 const http = require("http");
 
-// --- משתנים ---
+// --- משתני סביבה ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_KEY;
 const MONGO_URI = process.env.MONGO_URI;
 const PORT = process.env.PORT || 10000;
-const URL = "https://dvir-army-bot.onrender.com"; // הכתובת שלך
 
-// --- MongoDB ---
+// --- חיבור ל-MongoDB ---
 mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 })
-.then(() => console.log("✅ מחובר בהצלחה ל-MongoDB!"))
-.catch(err => console.error("❌ שגיאת Mongo:", err.message));
+    .then(() => console.log("✅ מחובר בהצלחה ל-MongoDB!"))
+    .catch(err => console.error("❌ שגיאת Mongo:", err.message));
 
-// --- מודל ---
+// --- מודל חייל ---
 const soldierSchema = new mongoose.Schema({
     name: { type: String, required: true, unique: true },
     unit: String,
@@ -25,16 +24,16 @@ const soldierSchema = new mongoose.Schema({
 
 const Soldier = mongoose.model("Soldier", soldierSchema);
 
-// --- יצירת בוט (ללא polling!) ---
-const bot = new TelegramBot(TELEGRAM_TOKEN);
+// --- יצירת בוט ---
+const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
-// --- הגדרת Webhook ---
-bot.setWebHook(`${URL}/bot${TELEGRAM_TOKEN}`);
-
-async function askAI(userInput, allSoldiers) {
-    const prompt = `You are a military clerk. Current Soldiers Data: ${JSON.stringify(allSoldiers)}. 
+// --- פונקציית AI ---
+async function askAI(userInput) {
+    const allSoldiers = await Soldier.find({});
+    const prompt = `You are a military clerk. Data: ${JSON.stringify(allSoldiers)}. 
 Return JSON only: {"type": "update", "updates": [{"name": "Name", "status": "STATUS"}]} OR {"type": "chat", "text": "Hebrew reply"}.
-User message: "${userInput}"`;
+Status: HOME, BASE, HQ_MM1, HQ_MM2, HQ_MM3, HQ_MF, HQ_SMF, DRIVER, ASSIST.
+User: "${userInput}"`;
 
     const postData = JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
@@ -42,68 +41,40 @@ User message: "${userInput}"`;
 
     const options = {
         hostname: "generativelanguage.googleapis.com",
-        path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(postData)
+            "Content-Length": Buffer.byteLength(postData),
         },
     };
 
     return new Promise((resolve) => {
         const req = https.request(options, (res) => {
             let body = "";
-
             res.on("data", (d) => (body += d));
-
             res.on("end", () => {
                 try {
-                    console.log("🔍 Gemini raw response:", body);
-
                     if (res.statusCode !== 200) {
-                        resolve({ type: "chat", text: `שגיאת AI (${res.statusCode})` });
+                        resolve({ type: "chat", text: `שגיאה מגוגל (${res.statusCode})` });
                         return;
                     }
-
                     const parsed = JSON.parse(body);
-
-                    if (!parsed.candidates) {
-                        resolve({ type: "chat", text: "AI לא החזיר תשובה תקינה" });
-                        return;
-                    }
-
                     const aiText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-
-                    if (!aiText) {
-                        resolve({ type: "chat", text: "AI החזיר תשובה ריקה" });
-                        return;
-                    }
-
-                    const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-
-                    resolve(
-                        jsonMatch
-                            ? JSON.parse(jsonMatch[0])
-                            : { type: "chat", text: aiText }
-                    );
-
+                    const jsonMatch = aiText?.match(/\{[\s\S]*\}/);
+                    resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
                 } catch (e) {
-                    console.error("❌ AI parse error:", e);
-                    resolve({ type: "chat", text: "שגיאה בפענוח תשובת AI" });
+                    resolve({ type: "chat", text: "שגיאה בפענוח הנתונים." });
                 }
             });
         });
-
-        req.on("error", (err) => {
-            console.error("❌ Request error:", err);
-            resolve({ type: "chat", text: "תקלת תקשורת עם AI" });
-        });
-
+        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת עם AI." }));
         req.write(postData);
         req.end();
     });
 }
-// --- דוח ---
+
+// --- דוח תמונת מצב ---
 async function buildStatusReport() {
     const allSoldiers = await Soldier.find({});
     let groups = { HQ_MF: [], HQ_SMF: [], HQ_MM1: [], HQ_MM2: [], HQ_MM3: [], DRIVER: [], ASSIST: [], BASE: [], HOME: [] };
@@ -112,60 +83,71 @@ async function buildStatusReport() {
         if (groups[s.status]) groups[s.status].push(s.name);
     });
 
-    return `📍 תמונת מצב:
-חפ"ק: ${groups.HQ_MF.join(", ")}
-בית: ${groups.HOME.join(", ")}
-בסיס: ${groups.BASE.join(", ")}`;
+    return `📍 *תמונת מצב פלוגתית:*
+⭐ *חפ"ק:*
+• מ"פ: ${groups.HQ_MF.join(", ") || "-"} | סמ"פ: ${groups.HQ_SMF.join(", ") || "-"}
+• ממ1: ${groups.HQ_MM1.join(", ") || "-"} | ממ2: ${groups.HQ_MM2.join(", ") || "-"} | ממ3: ${groups.HQ_MM3.join(", ") || "-"}
+🚛 *לוגיסטיקה:* ${groups.DRIVER.join(", ") || "-"} | ${groups.ASSIST.join(", ") || "-"}
+🏠 *בבית:* ${groups.HOME.join(", ") || "-"}
+🚌 *בבסיס:* ${groups.BASE.join(", ") || "-"}
+_עודכן: ${new Date().toLocaleTimeString("he-IL")}_`;
 }
 
 // --- טיפול בהודעות ---
 bot.on("message", async (msg) => {
     if (!msg.text) return;
-
     const text = msg.text.trim();
     const chatId = msg.chat.id;
 
+    // דוח
     if (text.includes("תמונת מצב") || text === "מי פה") {
         const report = await buildStatusReport();
-        bot.sendMessage(chatId, report);
+        bot.sendMessage(chatId, report, { parse_mode: "Markdown" });
         return;
     }
 
-    const allSoldiers = await Soldier.find({});
-    const aiResult = await askAI(text, allSoldiers);
-
-    if (aiResult.type === "update") {
-        for (const upd of aiResult.updates) {
-            await Soldier.findOneAndUpdate(
-                { name: upd.name },
-                { status: upd.status, lastUpdate: Date.now() }
-            );
+    // עדכון סד"כ (מחלקות)
+    if (text.includes("מחלקה") && text.includes(":")) {
+        const lines = text.split("\n");
+        let currentUnit = null;
+        for (const line of lines) {
+            if (line.includes(":")) {
+                currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
+            } else if (currentUnit && line.trim()) {
+                const name = line.trim();
+                await Soldier.findOneAndUpdate(
+                    { name },
+                    { unit: currentUnit },
+                    { upsert: true, new: true }
+                );
+            }
         }
-        bot.sendMessage(chatId, "עודכן 👍");
+        bot.sendMessage(chatId, 'הסד"כ עודכן! 🫡');
+        return;
+    }
+
+    // AI
+    const aiResult = await askAI(text);
+    if (aiResult.type === "update" && aiResult.updates) {
+        for (const upd of aiResult.updates) {
+            if (upd.name) {
+                await Soldier.findOneAndUpdate(
+                    { name: upd.name },
+                    { status: upd.status, lastUpdate: Date.now() },
+                    { upsert: true }
+                );
+            }
+        }
+        bot.sendMessage(chatId, `קיבלתי, עדכנתי! 👍`);
     } else {
-        bot.sendMessage(chatId, aiResult.text);
+        bot.sendMessage(chatId, aiResult.text || "רות.");
     }
 });
 
-// --- שרת webhook ---
+// --- שרת HTTP לשמירה על החיים ב-Render ---
 http.createServer((req, res) => {
-    if (req.method === "POST" && req.url === `/bot${TELEGRAM_TOKEN}`) {
-        let body = "";
-        req.on("data", chunk => body += chunk);
-        req.on("end", () => {
-            try {
-                const update = JSON.parse(body);
-                bot.processUpdate(update);
-            } catch (e) {
-                console.error("Webhook error:", e);
-            }
-            res.writeHead(200);
-            res.end();
-        });
-    } else {
-        res.writeHead(200);
-        res.end("Bot alive");
-    }
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is Alive');
 }).listen(PORT);
 
-console.log("🚀 Bot running with Webhook");
+console.log("🚀 הבוט דרוך ומוכן ב-Ohio!");
