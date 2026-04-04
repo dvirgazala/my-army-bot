@@ -43,12 +43,11 @@ async function askAI(userInput, allSoldiers) {
 
     const options = {
         hostname: "generativelanguage.googleapis.com",
-        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`, // הכתובת הישנה והטובה
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            "Content-Length": Buffer.byteLength(postData),
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+            "Content-Length": Buffer.byteLength(postData) // זה עוזר למנוע שגיאות 404
         },
     };
 
