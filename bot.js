@@ -41,7 +41,7 @@ async function askAI(userInput) {
     const options = {
         hostname: "generativelanguage.googleapis.com",
         // שינינו מ-v1beta ל-v1 (גרסה יציבה יותר) ומ-gemini-1.5-flash לגרסה מלאה
-        path: `/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
