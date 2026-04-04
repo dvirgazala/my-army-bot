@@ -8,10 +8,15 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_KEY;
 const MONGO_URI = process.env.MONGO_URI;
 
-// --- חיבור ל-MongoDB (הזיכרון הקבוע) ---
-mongoose.connect(MONGO_URI)
-    .then(() => console.log("✅ מחובר בהצלחה ל-MongoDB! הנתונים נשמרים בענן."))
-    .catch(err => console.error("❌ שגיאת חיבור למונגו:", err));
+mongoose.connect(MONGO_URI, { 
+    serverSelectionTimeoutMS: 5000 // יחכה רק 5 שניות במקום 10
+})
+.then(() => console.log("✅ מחובר בהצלחה ל-MongoDB!"))
+.catch(err => {
+    console.error("❌ שגיאת חיבור מפורטת:");
+    console.error("Message:", err.message);
+    console.error("Reason:", err.reason);
+});
 
 // הגדרת מבנה הנתונים של חייל במסד הנתונים
 const soldierSchema = new mongoose.Schema({
