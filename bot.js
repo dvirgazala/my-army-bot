@@ -1,6 +1,7 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 const https = require("https");
+const http = require("http"); // הוספנו את זה לשרת הבסיסי
 
 // --- הגדרות מפתחות ---
 const TELEGRAM_TOKEN = "8684518091:AAFXwAcSFaRmCNGCkgdsHFq3cdmdZGaRn5I";
@@ -15,14 +16,10 @@ let soldiersStatus = {};
 let companyData = [];
 
 if (fs.existsSync(DB_FILE)) {
-  try {
-    soldiersStatus = JSON.parse(fs.readFileSync(DB_FILE));
-  } catch (e) {}
+  try { soldiersStatus = JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) {}
 }
 if (fs.existsSync(COMPANY_FILE)) {
-  try {
-    companyData = JSON.parse(fs.readFileSync(COMPANY_FILE));
-  } catch (e) {}
+  try { companyData = JSON.parse(fs.readFileSync(COMPANY_FILE)); } catch (e) {}
 }
 
 function saveAll() {
@@ -42,7 +39,7 @@ async function askAI(userInput) {
 
   const options = {
     hostname: "generativelanguage.googleapis.com",
-    path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
+    path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -57,48 +54,26 @@ async function askAI(userInput) {
       res.on("end", () => {
         try {
           if (res.statusCode !== 200) {
-            console.error(`Google Error Status: ${res.statusCode}`);
-            console.error(`Response: ${body}`);
-            resolve({
-              type: "chat",
-              text: "גוגל חוסם את הבקשה. נסה ליצור מפתח API חדש.",
-            });
+            resolve({ type: "chat", text: "גוגל חוסם את הבקשה." });
             return;
           }
-
           const parsed = JSON.parse(body);
           const aiText = parsed.candidates[0].content.parts[0].text;
           const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-          resolve(
-            jsonMatch
-              ? JSON.parse(jsonMatch[0])
-              : { type: "chat", text: aiText },
-          );
+          resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
         } catch (e) {
-          console.log("Full Body Received:", body);
           resolve({ type: "chat", text: "שגיאה בפענוח התשובה." });
         }
       });
     });
-
-    req.on("error", (err) => resolve({ type: "chat", text: "תקלת תקשורת." }));
+    req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת." }));
     req.write(postData);
     req.end();
   });
 }
 
 function buildStatusReport() {
-  let groups = {
-    HQ_MF: [],
-    HQ_SMF: [],
-    HQ_MM1: [],
-    HQ_MM2: [],
-    HQ_MM3: [],
-    DRIVER: [],
-    ASSIST: [],
-    BASE: [],
-    HOME: [],
-  };
+  let groups = { HQ_MF: [], HQ_SMF: [], HQ_MM1: [], HQ_MM2: [], HQ_MM3: [], DRIVER: [], ASSIST: [], BASE: [], HOME: [] };
   for (let name in soldiersStatus) {
     if (groups[soldiersStatus[name]]) groups[soldiersStatus[name]].push(name);
   }
@@ -126,8 +101,7 @@ bot.on("message", async (msg) => {
     const lines = text.split("\n");
     let currentUnit = null;
     lines.forEach((line) => {
-      if (line.includes(":"))
-        currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
+      if (line.includes(":")) currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
       else if (currentUnit && line.trim()) {
         const name = line.trim();
         companyData = companyData.filter((s) => s.name !== name);
@@ -141,9 +115,7 @@ bot.on("message", async (msg) => {
 
   const aiResult = await askAI(text);
   if (aiResult.type === "update" && aiResult.updates) {
-    aiResult.updates.forEach((upd) => {
-      if (upd.name) soldiersStatus[upd.name] = upd.status;
-    });
+    aiResult.updates.forEach((upd) => { if (upd.name) soldiersStatus[upd.name] = upd.status; });
     saveAll();
     bot.sendMessage(chatId, `קיבלתי, עדכנתי! 👍`);
   } else {
@@ -151,4 +123,13 @@ bot.on("message", async (msg) => {
   }
 });
 
-console.log("הבוט דרוך ומוכן בגרסת Gemini 1.5 Flash!");
+// --- שרת פשוט עבור Render ו-Cron-job ---
+const port = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running...');
+}).listen(port, () => {
+  console.log(`Server is listening on port ${port}`);
+});
+
+console.log("הבוט דרוך ומוכן בגרסת Gemini 1.5 Flash (עם שרת HTTP)!");
