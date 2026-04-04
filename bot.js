@@ -1,11 +1,11 @@
 const TelegramBot = require("node-telegram-bot-api");
 const fs = require("fs");
 const https = require("https");
-const http = require("http"); // הוספנו את זה לשרת הבסיסי
+const http = require("http");
 
-// --- הגדרות מפתחות ---
-const TELEGRAM_TOKEN = "8684518091:AAFXwAcSFaRmCNGCkgdsHFq3cdmdZGaRn5I";
-const GEMINI_KEY = "AIzaSyCtDgnWD0u5rrhnpaCCakohtVuCPIf0uH0";
+// --- משיכת מפתחות ממשתני הסביבה (אבטחה) ---
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const GEMINI_KEY = process.env.GEMINI_KEY;
 
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 
@@ -15,71 +15,74 @@ const COMPANY_FILE = "company.json";
 let soldiersStatus = {};
 let companyData = [];
 
+// טעינת נתונים
 if (fs.existsSync(DB_FILE)) {
-  try { soldiersStatus = JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) {}
+    try { soldiersStatus = JSON.parse(fs.readFileSync(DB_FILE)); } catch (e) {}
 }
 if (fs.existsSync(COMPANY_FILE)) {
-  try { companyData = JSON.parse(fs.readFileSync(COMPANY_FILE)); } catch (e) {}
+    try { companyData = JSON.parse(fs.readFileSync(COMPANY_FILE)); } catch (e) {}
 }
 
 function saveAll() {
-  fs.writeFileSync(DB_FILE, JSON.stringify(soldiersStatus, null, 2));
-  fs.writeFileSync(COMPANY_FILE, JSON.stringify(companyData, null, 2));
+    fs.writeFileSync(DB_FILE, JSON.stringify(soldiersStatus, null, 2));
+    fs.writeFileSync(COMPANY_FILE, JSON.stringify(companyData, null, 2));
 }
 
 async function askAI(userInput) {
-  const prompt = `You are a military clerk. Data: ${JSON.stringify(companyData)}. 
+    const prompt = `You are a military clerk. Data: ${JSON.stringify(companyData)}. 
     Return JSON only: {"type": "update", "updates": [{"name": "Name", "status": "STATUS"}]} OR {"type": "chat", "text": "Hebrew reply"}.
     Status: HOME, BASE, HQ_MM1, HQ_MM2, HQ_MM3, HQ_MF, HQ_SMF, DRIVER, ASSIST.
     User: "${userInput}"`;
 
-  const postData = JSON.stringify({
-    contents: [{ parts: [{ text: prompt }] }],
-  });
-
-  const options = {
-    hostname: "generativelanguage.googleapis.com",
-    path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(postData),
-      // הוספת השורה הזו היא הקריטית:
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    },
-  };
-
-  return new Promise((resolve) => {
-    const req = https.request(options, (res) => {
-      let body = "";
-      res.on("data", (d) => (body += d));
-      res.on("end", () => {
-        try {
-          if (res.statusCode !== 200) {
-            resolve({ type: "chat", text: "גוגל חוסם את הבקשה." });
-            return;
-          }
-          const parsed = JSON.parse(body);
-          const aiText = parsed.candidates[0].content.parts[0].text;
-          const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-          resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
-        } catch (e) {
-          resolve({ type: "chat", text: "שגיאה בפענוח התשובה." });
-        }
-      });
+    const postData = JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
     });
-    req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת." }));
-    req.write(postData);
-    req.end();
-  });
+
+    const options = {
+        hostname: "generativelanguage.googleapis.com",
+        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Content-Length": Buffer.byteLength(postData),
+            // השורה הזו גורמת לגוגל לחשוב שאנחנו דפדפן כרום רגיל:
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        },
+    };
+
+    return new Promise((resolve) => {
+        const req = https.request(options, (res) => {
+            let body = "";
+            res.on("data", (d) => (body += d));
+            res.on("end", () => {
+                try {
+                    if (res.statusCode !== 200) {
+                        console.error("Google Error:", body);
+                        resolve({ type: "chat", text: "גוגל עדיין חוסם. נסה לשנות Region ב-Render." });
+                        return;
+                    }
+                    const parsed = JSON.parse(body);
+                    const aiText = parsed.candidates[0].content.parts[0].text;
+                    const jsonMatch = aiText.match(/\{[\s\S]*\}/);
+                    resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
+                } catch (e) {
+                    resolve({ type: "chat", text: "שגיאה בפענוח התשובה מה-AI." });
+                }
+            });
+        });
+        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת מול גוגל." }));
+        req.write(postData);
+        req.end();
+    });
 }
 
+// פונקציית דוח תמונת מצב
 function buildStatusReport() {
-  let groups = { HQ_MF: [], HQ_SMF: [], HQ_MM1: [], HQ_MM2: [], HQ_MM3: [], DRIVER: [], ASSIST: [], BASE: [], HOME: [] };
-  for (let name in soldiersStatus) {
-    if (groups[soldiersStatus[name]]) groups[soldiersStatus[name]].push(name);
-  }
-  return `📍 *תמונת מצב פלוגתית:*
+    let groups = { HQ_MF: [], HQ_SMF: [], HQ_MM1: [], HQ_MM2: [], HQ_MM3: [], DRIVER: [], ASSIST: [], BASE: [], HOME: [] };
+    for (let name in soldiersStatus) {
+        if (groups[soldiersStatus[name]]) groups[soldiersStatus[name]].push(name);
+    }
+    return `📍 *תמונת מצב פלוגתית:*
 ⭐ *חפ"ק:*
 • מ"פ: ${groups.HQ_MF.join(", ") || "-"} | סמ"פ: ${groups.HQ_SMF.join(", ") || "-"}
 • ממ1: ${groups.HQ_MM1.join(", ") || "-"} | ממ2: ${groups.HQ_MM2.join(", ") || "-"} | ממ3: ${groups.HQ_MM3.join(", ") || "-"}
@@ -90,48 +93,46 @@ _עודכן: ${new Date().toLocaleTimeString("he-IL")}_`;
 }
 
 bot.on("message", async (msg) => {
-  if (!msg.text) return;
-  const text = msg.text.trim();
-  const chatId = msg.chat.id;
+    if (!msg.text) return;
+    const text = msg.text.trim();
+    const chatId = msg.chat.id;
 
-  if (text.includes("תמונת מצב") || text === "מי פה") {
-    bot.sendMessage(chatId, buildStatusReport(), { parse_mode: "Markdown" });
-    return;
-  }
+    if (text.includes("תמונת מצב") || text === "מי פה") {
+        bot.sendMessage(chatId, buildStatusReport(), { parse_mode: "Markdown" });
+        return;
+    }
 
-  if (text.includes("מחלקה") && text.includes(":")) {
-    const lines = text.split("\n");
-    let currentUnit = null;
-    lines.forEach((line) => {
-      if (line.includes(":")) currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
-      else if (currentUnit && line.trim()) {
-        const name = line.trim();
-        companyData = companyData.filter((s) => s.name !== name);
-        companyData.push({ name, unit: currentUnit });
-      }
-    });
-    saveAll();
-    bot.sendMessage(chatId, 'הסד"כ עודכן! 🫡');
-    return;
-  }
+    if (text.includes("מחלקה") && text.includes(":")) {
+        const lines = text.split("\n");
+        let currentUnit = null;
+        lines.forEach((line) => {
+            if (line.includes(":")) currentUnit = line.split(":")[0].replace("מחלקה", "").trim();
+            else if (currentUnit && line.trim()) {
+                const name = line.trim();
+                companyData = companyData.filter((s) => s.name !== name);
+                companyData.push({ name, unit: currentUnit });
+            }
+        });
+        saveAll();
+        bot.sendMessage(chatId, 'הסד"כ עודכן! 🫡');
+        return;
+    }
 
-  const aiResult = await askAI(text);
-  if (aiResult.type === "update" && aiResult.updates) {
-    aiResult.updates.forEach((upd) => { if (upd.name) soldiersStatus[upd.name] = upd.status; });
-    saveAll();
-    bot.sendMessage(chatId, `קיבלתי, עדכנתי! 👍`);
-  } else {
-    bot.sendMessage(chatId, aiResult.text || "רות.");
-  }
+    const aiResult = await askAI(text);
+    if (aiResult.type === "update" && aiResult.updates) {
+        aiResult.updates.forEach((upd) => { if (upd.name) soldiersStatus[upd.name] = upd.status; });
+        saveAll();
+        bot.sendMessage(chatId, `קיבלתי, עדכנתי! 👍`);
+    } else {
+        bot.sendMessage(chatId, aiResult.text || "רות.");
+    }
 });
 
-// --- שרת פשוט עבור Render ו-Cron-job ---
-const port = process.env.PORT || 3000;
+// שרת HTTP עבור Render
+const port = process.env.PORT || 10000;
 http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('Bot is running...');
-}).listen(port, () => {
-  console.log(`Server is listening on port ${port}`);
-});
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot is Alive');
+}).listen(port);
 
-console.log("הבוט דרוך ומוכן בגרסת Gemini 1.5 Flash (עם שרת HTTP)!");
+console.log("הבוט דרוך ומוכן ב-Ohio!");
