@@ -42,7 +42,7 @@ User message: "${userInput}"`;
 
     const options = {
         hostname: "generativelanguage.googleapis.com",
-        path: `/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`,
+        path: `/v1beta/models/gemini-1.5-pro:generateContent?key=${GEMINI_KEY}`,
         method: "POST",
         headers: {
             "Content-Type": "application/json",
