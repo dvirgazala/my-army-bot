@@ -31,12 +31,10 @@ const bot = new TelegramBot(TELEGRAM_TOKEN);
 // --- הגדרת Webhook ---
 bot.setWebHook(`${URL}/bot${TELEGRAM_TOKEN}`);
 
-// --- AI ---
 async function askAI(userInput, allSoldiers) {
     const prompt = `You are a military clerk. Current Soldiers Data: ${JSON.stringify(allSoldiers)}. 
-    Return JSON only: {"type": "update", "updates": [{"name": "Name", "status": "STATUS"}]} OR {"type": "chat", "text": "Hebrew reply"}.
-    Status options: HOME, BASE, HQ_MM1, HQ_MM2, HQ_MM3, HQ_MF, HQ_SMF, DRIVER, ASSIST.
-    User message: "${userInput}"`;
+Return JSON only: {"type": "update", "updates": [{"name": "Name", "status": "STATUS"}]} OR {"type": "chat", "text": "Hebrew reply"}.
+User message: "${userInput}"`;
 
     const postData = JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
@@ -55,24 +53,56 @@ async function askAI(userInput, allSoldiers) {
     return new Promise((resolve) => {
         const req = https.request(options, (res) => {
             let body = "";
+
             res.on("data", (d) => (body += d));
+
             res.on("end", () => {
                 try {
+                    console.log("🔍 Gemini raw response:", body);
+
+                    if (res.statusCode !== 200) {
+                        resolve({ type: "chat", text: `שגיאת AI (${res.statusCode})` });
+                        return;
+                    }
+
                     const parsed = JSON.parse(body);
-                    const aiText = parsed.candidates[0].content.parts[0].text;
+
+                    if (!parsed.candidates) {
+                        resolve({ type: "chat", text: "AI לא החזיר תשובה תקינה" });
+                        return;
+                    }
+
+                    const aiText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                    if (!aiText) {
+                        resolve({ type: "chat", text: "AI החזיר תשובה ריקה" });
+                        return;
+                    }
+
                     const jsonMatch = aiText.match(/\{[\s\S]*\}/);
-                    resolve(jsonMatch ? JSON.parse(jsonMatch[0]) : { type: "chat", text: aiText });
-                } catch {
-                    resolve({ type: "chat", text: "שגיאת AI" });
+
+                    resolve(
+                        jsonMatch
+                            ? JSON.parse(jsonMatch[0])
+                            : { type: "chat", text: aiText }
+                    );
+
+                } catch (e) {
+                    console.error("❌ AI parse error:", e);
+                    resolve({ type: "chat", text: "שגיאה בפענוח תשובת AI" });
                 }
             });
         });
-        req.on("error", () => resolve({ type: "chat", text: "תקלת תקשורת" }));
+
+        req.on("error", (err) => {
+            console.error("❌ Request error:", err);
+            resolve({ type: "chat", text: "תקלת תקשורת עם AI" });
+        });
+
         req.write(postData);
         req.end();
     });
 }
-
 // --- דוח ---
 async function buildStatusReport() {
     const allSoldiers = await Soldier.find({});
