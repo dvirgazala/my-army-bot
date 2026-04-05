@@ -42,6 +42,8 @@ bot.on("message", async (msg) => {
   if (!msg.text) return;
   const text = msg.text.trim();
   const chatId = msg.chat.id;
+  const senderName = msg.from.first_name || "מפקד";
+  const senderId = msg.from.id; // אנחנו שומרים גם את ה-ID למקרה שנרצה לעשות הרשאות בעתיד
 
   const isReport = ["דוח", "מצב", "תמונה", "סיכום", "סטטוס"].some((k) =>
     text.includes(k),
@@ -90,7 +92,7 @@ bot.on("message", async (msg) => {
 
   try {
     const { data: allSoldiers } = await supabase.from("soldiers").select("*");
-    const ai = await askAi(text, allSoldiers || []);
+    const ai = await askAi(text, allSoldiers || [], senderName);
 
     if (ai.type === "reset") {
       let q = supabase.from("soldiers").update({
@@ -153,18 +155,21 @@ bot.on("message", async (msg) => {
   }
 });
 
-async function askAi(input, data) {
+async function askAi(input, data, senderName) {
   const prompt = `אתה סמב"ץ פלוגתי. המאגר: ${JSON.stringify(data.map((s) => ({ name: s.name, unit: s.unit })))}.
+  המשתמש שפונה אליך כרגע קוראים לו: ${senderName}.
   הודעה: "${input}". 
   
   חוקים:
-  1. עדכון: אם החייל במשימה, status: "BASE". משימות: חפ"ק מ"פ, חפ"ק סמ"פ, חפ"ק מ"מ 1, חפ"ק מ"מ 2, חפ"ק מ"מ 3, חפ"ק עתודה, נהג משאית, מלווה נהג משאית. החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"שם משימה"}], "text":"אישור קצר"}.
+  1. עדכון: אם החייל במשימה, status: "BASE". משימות: חפ"ק מ"פ, חפ"ק סמ"פ, חפ"ק מ"מ 1, חפ"ק מ"מ 2, חפ"ק מ"מ 3, חפ"ק עתודה, נהג משאית, מלווה נהג משאית. החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"שם משימה"}], "text":"אישור קצר וידידותי שפונה למשתמש בשמו"}.
   2. איפוס חכם: אם המשתמש מבקש לאפס (מילים כמו "תאפס", "לאפס", "איפוס", "נקה"):
-     - אם הוא אומר "את הכל", "את דוח 1", "הדוח כולו" -> החזר {"type":"reset", "unit":"ALL", "text":"מאפס את כל הפלוגה"}
-     - אם הוא אומר "את מחלקה X" -> החזר {"type":"reset", "unit":"שם המחלקה המדויק", "text":"מאפס מחלקה"}
-  3. אם זו שיחה רגילה, החזר {"type":"chat", "text":"תשובה ידידותית"}
+     - אם הוא אומר "את הכל", "את דוח 1", "הדוח כולו" -> החזר {"type":"reset", "unit":"ALL"}
+     - אם הוא אומר "את מחלקה X" -> החזר {"type":"reset", "unit":"שם המחלקה המדויק"}
+  3. אם זו שיחה רגילה, החזר {"type":"chat", "text":"תשובה ידידותית שכוללת את שם המשתמש"}
   
   החזר JSON תקין בלבד!`;
+
+// ... המשך הפונקציה נשאר בדיוק אותו דבר ...
 
   const postData = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
