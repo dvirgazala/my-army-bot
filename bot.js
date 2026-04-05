@@ -27,7 +27,7 @@ http.createServer((req, res) => {
   res.end();
 }).listen(process.env.PORT || 3000);
 
-console.log("🚀 בוט סמב''ץ גרסה 40 - מאוחדת ומאובטחת באוויר!");
+console.log("🚀 בוט סמב''ץ גרסה 45 - ניהול מאגר קשיח בלבד!");
 
 // ==========================================
 // לוגיקת קבלת הודעות
@@ -47,59 +47,25 @@ bot.on("message", async (msg) => {
     return bot.sendMessage(chatId, generateFixedReport(data || []), { parse_mode: "Markdown" });
   }
 
-  // 2. הזנת סד"כ רשימה (זיהוי "בסיס:" ו-"בבית:")
-  if (text.includes(":") && !text.startsWith("***")) {
-    const lines = text.split("\n");
-    let currentUnit = "";
-    let currentStatus = "BASE";
-    let toInsert = [];
-    
-    for (let line of lines) {
-      let l = line.trim();
-      if (!l) continue;
-      
-      if (l.includes(":")) {
-        const rawHeader = l.replace(":", "").trim().replace(/''/g, '"');
-        if (rawHeader === "בסיס" || rawHeader === "בבסיס") {
-          currentStatus = "BASE";
-        } else if (rawHeader === "בבית" || rawHeader === "בית") {
-          currentStatus = "HOME";
-        } else {
-          currentUnit = rawHeader; 
-          currentStatus = "BASE";
-        }
-      } else if (currentUnit) {
-        toInsert.push({ 
-          name: l, unit: currentUnit, status: currentStatus, 
-          mission: "ללא משימה", is_active: true 
-        });
-      }
-    }
-    if (toInsert.length > 0) {
-      await supabase.from("soldiers").upsert(toInsert, { onConflict: "name" });
-      return bot.sendMessage(chatId, `✅ המאגר עודכן! ${toInsert.length} חיילים נשמרו והוכנסו לדוח.`);
-    }
-  }
-
-  // 3. עיבוד פקודות באמצעות AI
+  // 2. עיבוד פקודות באמצעות AI (הכל עובר דרך ה-AI כדי להגן על המאגר)
   try {
     const { data: allSoldiers } = await supabase.from("soldiers").select("*");
     const ai = await askAi(text, allSoldiers || [], senderName);
 
-    // --- פקודת שינוי שם ---
+    // --- פקודת שינוי שם (רק אם ה-AI זיהה את הפורמט הקשיח) ---
     if (ai.type === "rename") {
       const { error } = await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
-      if (error) return bot.sendMessage(chatId, `❌ שגיאה בשינוי השם. ודא שהשם "${ai.oldName}" קיים.`);
-      return bot.sendMessage(chatId, `✅ השם עודכן בהצלחה מ-${ai.oldName} ל-${ai.newName}.`);
+      if (error) return bot.sendMessage(chatId, `❌ שגיאה בשינוי השם. ודא שהשם "${ai.oldName}" קיים במאגר.`);
+      return bot.sendMessage(chatId, `✅ המאגר עודכן: השם ${ai.oldName} שונה ל-${ai.newName}.`);
     }
 
-    // --- פקודת הוספת חייל חדש ---
+    // --- פקודת הוספת חייל חדש (רק אם ה-AI זיהה את הפורמט הקשיח) ---
     if (ai.type === "add") {
       const { error } = await supabase.from("soldiers").insert([
-        { name: ai.name, unit: ai.unit, status: "BASE", is_active: true }
+        { name: ai.name, unit: ai.unit || "ללא מחלקה", status: "BASE", is_active: true }
       ]);
-      if (error) return bot.sendMessage(chatId, `❌ לא הצלחתי להוסיף את ${ai.name}. אולי הוא כבר קיים?`);
-      return bot.sendMessage(chatId, `✅ ${ai.name} נוסף למחלקת ${ai.unit} ומופיע בדוח.`);
+      if (error) return bot.sendMessage(chatId, `❌ לא הצלחתי להוסיף את ${ai.name}. יתכן שהוא כבר קיים.`);
+      return bot.sendMessage(chatId, `✅ חייל חדש נוסף למאגר: ${ai.name}.`);
     }
 
     // --- איפוס חכם ---
@@ -110,11 +76,12 @@ bot.on("message", async (msg) => {
         return bot.sendMessage(chatId, `🫡 מחלקת **${ai.unit}** אופסה.`);
       } else {
         await q.neq("name", "dummy");
+        await q;
         return bot.sendMessage(chatId, `🫡 כל הדוח אופס.`);
       }
     }
 
-    // --- עדכון סטטוס רגיל (רק למי שקיים!) ---
+    // --- עדכון סטטוס/משימה רגיל (לא משנה את המאגר הקבוע) ---
     if (ai.type === "update" && ai.updates) {
       let count = 0;
       for (let u of ai.updates) {
@@ -129,7 +96,7 @@ bot.on("message", async (msg) => {
         if (data) count += data.length;
       }
       if (count > 0) return bot.sendMessage(chatId, ai.text);
-      else return bot.sendMessage(chatId, "🤔 לא מצאתי את השמות האלו במאגר. להוספה השתמש ב-***עדכון.");
+      else return bot.sendMessage(chatId, "🤔 לא מצאתי את השמות האלו במאגר. (להוספה השתמש ב-***הוספת שם:)");
     }
 
     // --- שיחה רגילה ---
@@ -147,16 +114,19 @@ bot.on("message", async (msg) => {
 // פונקציית AI (Gemini)
 // ==========================================
 async function askAi(input, data, senderName) {
-  const prompt = `אתה סמב"ץ פלוגתי בשם ג'מיני. המשתמש שפונה אליך: ${senderName}. 
+  const prompt = `אתה סמב"ץ פלוגתי בשם ג'מיני. המשתמש: ${senderName}. 
   המאגר הקיים: ${JSON.stringify(data.map((s) => ({ name: s.name, unit: s.unit })))}.
   הודעה: "${input}". 
 
-  חוקים:
-  1. שינוי שם: אם מבקשים לשנות שם (למשל: "***שינוי שם א ל-ב"), החזר: {"type":"rename", "oldName":"א", "newName":"ב", "text":"משנה..."}.
-  2. הוספה: אם מבקשים להוסיף מישהו (למשל: "***עדכון יוסי למחלקה 1"), החזר: {"type":"add", "name":"יוסי", "unit":"מחלקה 1", "text":"מוסיף..."}.
+  חוקים קשיחים לניהול מאגר:
+  1. שינוי שם: רק אם ההודעה מתחילה ב-"***שינוי שם:", החזר: {"type":"rename", "oldName":"השם שלפני החץ", "newName":"השם שאחרי החץ"}.
+  2. הוספת שם: רק אם ההודעה מתחילה ב-"***הוספת שם:", החזר: {"type":"add", "name":"השם שצוין", "unit":"זהה מחלקה מהטקסט או השאר ריק"}.
+  
+  חוקים לתפעול שוטף:
   3. איפוס: אם מבקשים לאפס, החזר: {"type":"reset", "unit":"ALL או שם מחלקה"}.
-  4. עדכון: עבור הודעות רגילות, חפש במאגר. אם קיים, החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "text":"אישור"}.
-  5. אם השם לא קיים או שזו שיחה רגילה, החזר: {"type":"chat", "text":"תשובה ידידותית"}.
+  4. עדכון דוח: לכל הודעה אחרת (כולל רשימות עם ":"), עדכן רק סטטוס (BASE/HOME) או משימה. אל תיצור שמות חדשים! אם שם לא במאגר, התעלם ממנו.
+     החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "text":"אישור קצר"}.
+  5. אם זו סתם הודעה, החזר: {"type":"chat", "text":"תשובה ידידותית"}.
 
   החזר JSON בלבד!`;
 
@@ -192,7 +162,6 @@ async function askAi(input, data, senderName) {
 function generateFixedReport(soldiers) {
   let r = "*סד''כ מחלקות* 🪖\n\n";
   
-  // חישוב סיכום כללי
   const totalAll = soldiers.length;
   const totalBaseAll = soldiers.filter(s => s.status === "BASE").length;
   const totalHomeAll = soldiers.filter(s => s.status === "HOME").length;
