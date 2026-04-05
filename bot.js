@@ -104,80 +104,79 @@ bot.on("message", async (msg) => {
     const { data: allSoldiers } = await supabase.from("soldiers").select("*");
     const ai = await askAi(text, allSoldiers || [], senderName);
 
-    if (ai.type === "reset") {
-      let q = supabase.from("soldiers").update({
-        is_active: false,
-        status: "BASE",
-        mission: "ללא משימה",
-      });
+    // --- פקודת שינוי שם ---
+    if (ai.type === "rename") {
+      const { error } = await supabase.from("soldiers")
+        .update({ name: ai.newName })
+        .eq("name", ai.oldName);
+      
+      if (error) return bot.sendMessage(chatId, `❌ שגיאה בשינוי השם. ודא שהשם "${ai.oldName}" קיים.`);
+      return bot.sendMessage(chatId, `✅ השם עודכן בהצלחה מ-${ai.oldName} ל-${ai.newName}.`);
+    }
 
+    // --- פקודת הוספת חייל חדש ---
+    if (ai.type === "add") {
+      const { error } = await supabase.from("soldiers").insert([
+        { name: ai.name, unit: ai.unit, status: "BASE", is_active: true }
+      ]);
+      
+      if (error) return bot.sendMessage(chatId, `❌ לא הצלחתי להוסיף את ${ai.name}. אולי הוא כבר קיים?`);
+      return bot.sendMessage(chatId, `✅ ${ai.name} נוסף למחלקת ${ai.unit} ומופיע בדוח.`);
+    }
+
+    // --- איפוס חכם (נשאר דומה, רק עם התיקון ליחידות) ---
+    if (ai.type === "reset") {
+      let q = supabase.from("soldiers").update({ is_active: false, status: "BASE", mission: "ללא משימה" });
       if (ai.unit && ai.unit !== "ALL") {
-        const unitSearch = ai.unit.replace(/''/g, '"');
-        q = q.eq("unit", unitSearch);
-        await q;
-        return bot.sendMessage(
-          chatId,
-          `🫡 הכותרת של **${ai.unit}** נשמרה, אבל כל השמות אופסו בהצלחה.`,
-          { parse_mode: "Markdown" },
-        );
+        await q.eq("unit", ai.unit);
+        return bot.sendMessage(chatId, `🫡 מחלקת **${ai.unit}** אופסה.`);
       } else {
-        q = q.neq("name", "dummy");
-        await q;
-        return bot.sendMessage(
-          chatId,
-          `🫡 כל הדוח (כל המחלקות) אופס בהצלחה. השמות שמורים בענן.`,
-        );
+        await q.neq("name", "dummy");
+        return bot.sendMessage(chatId, `🫡 כל הדוח אופס.`);
       }
     }
 
+    // --- עדכון סטטוס רגיל (רק למי שקיים!) ---
     if (ai.type === "update" && ai.updates) {
       let count = 0;
       for (let u of ai.updates) {
-        let updateFields = { status: u.status, is_active: true };
-        updateFields.mission = u.mission || "ללא משימה";
-
-        let q = supabase.from("soldiers").update(updateFields);
-
-        if (u.name) {
-          const cleanName = u.name.replace(/[-\s]/g, "%");
-          q = q.ilike("name", `%${cleanName}%`);
-        } else if (u.unit && u.unit !== "ALL") {
-          const unitSearch = u.unit.replace(/''/g, '"');
-          q = q.eq("unit", unitSearch);
-        }
-
+        let q = supabase.from("soldiers").update({ status: u.status, mission: u.mission || "ללא משימה", is_active: true });
+        
+        // חיפוש חכם רק במאגר הקיים
+        if (u.name) q = q.ilike("name", `%${u.name.replace(/[-\s]/g, '%')}%`);
+        else if (u.unit) q = q.eq("unit", u.unit);
+        
         const { data } = await q.select();
         if (data) count += data.length;
       }
-      bot.sendMessage(
-        chatId,
-        count > 0 ? ai.text : "🤔 לא מצאתי את השם הזה במאגר.",
-      );
-    } else {
-      if (ai.type !== "reset") bot.sendMessage(chatId, ai.text || "אני כאן.");
+      if (count > 0) return bot.sendMessage(chatId, ai.text);
+      else return bot.sendMessage(chatId, "🤔 לא מצאתי אף אחד מהשמות האלו במאגר. אם זה חייל חדש, תשתמש ב-'***עדכון'.");
     }
-  } catch (e) {
-    console.error("AI Catch Error:", e);
-    bot.sendMessage(
-      chatId,
-      "שגיאה בעיבוד הנתונים. יתכן שיש עומס על שרתי ה-AI כרגע.",
-    );
+
+    // שיחה רגילה
+    if (ai.type === "chat") {
+      bot.sendMessage(chatId, ai.text);
+    }
   }
 });
 
 async function askAi(input, data, senderName) {
-  const prompt = `אתה סמב"ץ פלוגתי. המאגר: ${JSON.stringify(data.map((s) => ({ name: s.name, unit: s.unit })))}.
-  המשתמש שפונה אליך כרגע קוראים לו: ${senderName}.
+  const prompt = `אתה סמב"ץ פלוגתי בשם ג'מיני. המשתמש שפונה אליך: ${senderName}. 
+  המאגר הקיים (שמות ומחלקות): ${JSON.stringify(data.map((s) => ({ name: s.name, unit: s.unit })))}.
   הודעה: "${input}". 
-  
-  חוקים:
-  1. עדכון: אם החייל במשימה, status: "BASE". משימות: חפ"ק מ"פ, חפ"ק סמ"פ, חפ"ק מ"מ 1, חפ"ק מ"מ 2, חפ"ק מ"מ 3, חפ"ק עתודה, נהג משאית, מלווה נהג משאית. החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"שם משימה"}], "text":"אישור קצר וידידותי שפונה למשתמש בשמו"}.
-  2. איפוס חכם: אם המשתמש מבקש לאפס (מילים כמו "תאפס", "לאפס", "איפוס", "נקה"):
-     - אם הוא אומר "את הכל", "את דוח 1", "הדוח כולו" -> החזר {"type":"reset", "unit":"ALL"}
-     - אם הוא אומר "את מחלקה X" -> החזר {"type":"reset", "unit":"שם המחלקה המדויק"}
-  3. אם זו שיחה רגילה, החזר {"type":"chat", "text":"תשובה ידידותית שכוללת את שם המשתמש"}
-  
+
+  חוקים (לפי סדר עדיפות):
+  1. שינוי שם: אם המשתמש מבקש לשנות שם של חייל קיים (למשל: "***שינוי שם משה למשה כהן"), החזר: {"type":"rename", "oldName":"השם הישן", "newName":"השם החדש", "text":"אישור לשינוי"}.
+  2. הוספת חייל חדש: אם המשתמש מבקש להוסיף מישהו (למשל: "***עדכון ישראל ישראלי למחלקה 1"), החזר: {"type":"add", "name":"ישראל ישראלי", "unit":"מחלקה 1", "text":"מוסיף את ישראל למערכת"}.
+  3. איפוס: אם המשתמש מבקש לאפס/לנקות דוח (הכל או מחלקה), החזר: {"type":"reset", "unit":"ALL או שם המחלקה"}.
+  4. עדכון סטטוס/משימה: עבור הודעות רגילות (למשל: "דביר בבית"), חפש את השמות במאגר. החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "text":"תשובה ידידותית"}. 
+     חשוב: אם השם לא קיים במאגר, אל תיצור עדכון! תעבור לחוק 5.
+  5. שיחה רגילה: אם שום חוק לא מתאים, או אם השם לא נמצא, החזר: {"type":"chat", "text":"תשובה ידידותית שכוללת את שם המשתמש. אם הוא ניסה לעדכן שם שלא קיים, תגיד לו שהוא לא במאגר"}.
+
   החזר JSON תקין בלבד!`;
+
+  // שאר הפונקציה (ה-https.request) נשארת בדיוק אותו דבר
+  // ...
 
 // ... המשך הפונקציה נשאר בדיוק אותו דבר ...
 
