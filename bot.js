@@ -62,31 +62,41 @@ bot.on("message", async (msg) => {
     });
   }
 
+// 2. הזנת סד"כ (כולל זיהוי סטטוסים)
   if (text.includes(":")) {
     const lines = text.split("\n");
     let currentUnit = "";
+    let currentStatus = "BASE"; // ברירת מחדל
     let toInsert = [];
+    
     for (let line of lines) {
       let l = line.trim();
       if (!l) continue;
+      
       if (l.includes(":")) {
-        currentUnit = l.replace(":", "").trim().replace(/''/g, '"');
+        const rawHeader = l.replace(":", "").trim().replace(/''/g, '"');
+        // בדיקה האם מדובר בכותרת של סטטוס או כותרת של מחלקה
+        if (rawHeader === "בסיס" || rawHeader === "בבסיס") {
+          currentStatus = "BASE";
+        } else if (rawHeader === "בבית" || rawHeader === "בית") {
+          currentStatus = "HOME";
+        } else {
+          currentUnit = rawHeader; 
+          currentStatus = "BASE"; // איפוס סטטוס כשעוברים מחלקה
+        }
       } else if (currentUnit) {
-        toInsert.push({
-          name: l,
-          unit: currentUnit,
-          status: "BASE",
-          mission: "ללא משימה",
-          is_active: false,
+        toInsert.push({ 
+          name: l, 
+          unit: currentUnit, 
+          status: currentStatus, 
+          mission: "ללא משימה", 
+          is_active: true // מופעלים ומופיעים מיד בדוח!
         });
       }
     }
     if (toInsert.length > 0) {
       await supabase.from("soldiers").upsert(toInsert, { onConflict: "name" });
-      return bot.sendMessage(
-        chatId,
-        `✅ המאגר עודכן! ${toInsert.length} חיילים נשמרו.`,
-      );
+      return bot.sendMessage(chatId, `✅ המאגר עודכן! ${toInsert.length} חיילים נשמרו והוכנסו לדוח.`);
     }
   }
 
