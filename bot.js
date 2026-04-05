@@ -221,71 +221,41 @@ async function askAi(input, data, senderName) {
 }
 
 function generateFixedReport(soldiers) {
-  let r = "*סד''כ מחלקות* 🪖\n\n";
+  let r = "*סד''כ פלוגתי* 🪖\n\n";
+  
+  // חישוב סיכום כללי לכל הפלוגה
+  const totalAll = soldiers.length;
+  const totalBaseAll = soldiers.filter(s => s.status === "BASE").length;
+  const totalHomeAll = soldiers.filter(s => s.status === "HOME").length;
 
   VALID_UNITS.forEach((u) => {
-    const unitSolds = soldiers.filter(
-      (s) => s.unit === u || s.unit === u.replace('"', "''"),
-    );
+    const unitSolds = soldiers.filter(s => s.unit === u);
     r += `*${u}:*\n`;
-
+    
     if (unitSolds.length === 0) {
       r += `${RLM}---\n\n`;
       return;
     }
 
-    const inBase = unitSolds.filter((s) => s.status === "BASE");
-    const inHome = unitSolds.filter((s) => s.status === "HOME");
+    const inBase = unitSolds.filter(s => s.status === "BASE");
+    const inHome = unitSolds.filter(s => s.status === "HOME");
 
     if (inBase.length > 0) {
-      r += `בבסיס (${inBase.length}):\n${inBase.map((s) => s.name).join("\n")}\n\n`;
+      r += `בבסיס (${inBase.length}):\n${inBase.map(s => s.name).join("\n")}\n\n`;
     }
     if (inHome.length > 0) {
-      r += `בבית (${inHome.length}):\n${inHome.map((s) => s.name).join("\n")}\n\n`;
+      r += `בבית (${inHome.length}):\n${inHome.map(s => s.name).join("\n")}\n\n`;
     }
-    if (inBase.length === 0 && inHome.length === 0) {
-      r += `${RLM}---\n\n`;
-    }
-
-    r += `*סה"כ: ${inBase.length}/${unitSolds.length}.*\n\n`;
+    
+    r += `*סה"כ מחלקה: ${inBase.length}/${unitSolds.length}*\n\n`;
+    r += `------------------\n`;
   });
 
-  r += "---------------------------------\n\n*שיבוץ משימות* ⚡\n\n";
-  const missions = [
-    { k: 'חפ"ק מ"פ', l: 'חפ"ק מ"פ' },
-    { k: 'חפ"ק סמ"פ', l: 'חפ"ק סמ"פ' },
-    { k: 'חפ"ק מ"מ 1', l: 'חפ"ק מ"מ 1' },
-    { k: 'חפ"ק מ"מ 2', l: 'חפ"ק מ"מ 2' },
-    { k: 'חפ"ק מ"מ 3', l: 'חפ"ק מ"מ 3' },
-    { k: 'חפ"ק עתודה', l: 'חפ"ק עתודה' },
-    { k: "משאית", l: "משאית" },
-  ];
+  // הוספת סיכום כללי בסוף הדוח
+  r += `\n📊 *סיכום כללי:*\n`;
+  r += `*סה"כ:* ${totalAll}\n`;
+  r += `*בבסיס:* ${totalBaseAll}\n`;
+  r += `*בבית:* ${totalHomeAll}`;
 
-  missions.forEach((m) => {
-    let assigned;
-    if (m.k === "משאית") {
-      assigned = soldiers.filter(
-        (s) =>
-          (s.mission || "").includes("משאית") ||
-          (s.mission || "").includes("נהג"),
-      );
-    } else {
-      const mKey = m.k.replace(/['"״]/g, "").trim();
-      assigned = soldiers.filter((s) => {
-        const sMission = (s.mission || "").replace(/['"״]/g, "").trim();
-        return sMission === mKey;
-      });
-    }
-
-    r += `*${m.l}:*\n`;
-    r +=
-      assigned.length > 0
-        ? `${assigned.map((s) => s.name).join("\n")}\n\n`
-        : `${RLM}---\n\n`;
-  });
-
-  const totalBase = soldiers.filter((s) => s.status === "BASE").length;
-  const totalHome = soldiers.filter((s) => s.status === "HOME").length;
-  r += `---------------------------------\n\n*📊 סיכום:*\n*בבסיס: ${totalBase}.*\n*בבית: ${totalHome}.*`;
   return r;
 }
