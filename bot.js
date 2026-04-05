@@ -3,17 +3,12 @@ const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 const https = require("https");
 const http = require("http");
+const cron = require("node-cron");
 
-// הגדרת מפתחות
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const GEMINI_KEY = process.env.GEMINI_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
-
-if (!TELEGRAM_TOKEN || !GEMINI_KEY || !SUPABASE_URL || !SUPABASE_KEY) {
-  console.error("❌ שגיאה: חסרים מפתחות ב-Render או ב-.env");
-  process.exit(1);
-}
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
@@ -21,16 +16,34 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const VALID_UNITS = ['מפל"ג', "מחלקה 1", "מחלקה 2", "מחלקה 3", "חובשים"];
 const RLM = "\u200f";
 
-// שרת דמה ל-Render (Keep Alive)
-http.createServer((req, res) => {
-  res.write("Bot is running securely!");
-  res.end();
-}).listen(process.env.PORT || 3000);
+http.createServer((req, res) => { res.write("Bot is running!"); res.end(); }).listen(process.env.PORT || 3000);
 
-console.log("🚀 בוט סמב''ץ גרסה 46 - דוח עם תאריך ויום אוטומטי!");
+console.log("🚀 גרסה 48 באוויר - פקודת /id ותזכורות פעילות.");
 
 // ==========================================
-// לוגיקת קבלת הודעות
+// תזמון הודעות (Cron Jobs) - 18:00 כל יום
+// ==========================================
+
+// כאן תכניס את ה-ID שתקבל מהפקודה /id (למשל: -100123456789)
+const GROUP_CHAT_ID = "כאן_תשים_את_המספר_שתקבל"; 
+
+// שבת עד רביעי - תזכורת רגילה
+cron.schedule('0 18 * * 0,1,2,3,6', () => {
+  if (GROUP_CHAT_ID !== "כאן_תשים_את_המספר_שתקבל") {
+    bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת:* נא לשלוח דוח 1 למחר!", { parse_mode: "Markdown" });
+  }
+}, { scheduled: true, timezone: "Asia/Jerusalem" });
+
+// יום חמישי - תזכורת לסופ"ש
+cron.schedule('0 18 * * 4', () => {
+  if (GROUP_CHAT_ID !== "כאן_תשים_את_המספר_שתקבל") {
+    bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת סופ\"ש:* נא לשלוח דוח 1 לשישי-שבת!", { parse_mode: "Markdown" });
+  }
+}, { scheduled: true, timezone: "Asia/Jerusalem" });
+
+
+// ==========================================
+// לוגיקת הודעות
 // ==========================================
 bot.on("message", async (msg) => {
   if (!msg.text) return;
@@ -38,174 +51,126 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const senderName = msg.from.first_name || "מפקד";
 
-  // 1. בדיקת דוח (סטטוס)
-  const isReport = ["דוח", "מצב", "תמונה", "סיכום", "סטטוס"].some((k) => text.includes(k));
-  const isResetCommand = ["איפוס", "תאפס", "לאפס", "נקה"].some((k) => text.includes(k));
+  // פקודת ID - עוקפת את ה-AI
+  if (text.startsWith("/id")) {
+    return bot.sendMessage(chatId, `ה-ID של הצ'אט הזה הוא: \`${chatId}\``, { parse_mode: "Markdown" });
+  }
 
-  if (isReport && !isResetCommand) {
+  // בדיקת דוח 1 - עוקפת את ה-AI
+  const isReport = ["דוח", "מצב", "תמונה", "סיכום", "סטטוס"].some(k => text.includes(k));
+  const isReset = ["איפוס", "תאפס", "לאפס", "נקה"].some(k => text.includes(k));
+
+  if (isReport && !isReset) {
     const { data } = await supabase.from("soldiers").select("*").eq("is_active", true);
     return bot.sendMessage(chatId, generateFixedReport(data || []), { parse_mode: "Markdown" });
   }
 
-  // 2. עיבוד פקודות באמצעות AI
+  // כל השאר עובר ל-AI
   try {
     const { data: allSoldiers } = await supabase.from("soldiers").select("*");
     const ai = await askAi(text, allSoldiers || [], senderName);
 
-    // --- פקודת שינוי שם ---
     if (ai.type === "rename") {
-      const { error } = await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
-      if (error) return bot.sendMessage(chatId, `❌ שגיאה בשינוי השם. ודא שהשם "${ai.oldName}" קיים במאגר.`);
-      return bot.sendMessage(chatId, `✅ המאגר עודכן: השם ${ai.oldName} שונה ל-${ai.newName}.`);
+      await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
+      return bot.sendMessage(chatId, `✅ השם שונה ל-${ai.newName}.`);
     }
 
-    // --- פקודת הוספת חייל חדש ---
     if (ai.type === "add") {
-      const { error } = await supabase.from("soldiers").insert([
-        { name: ai.name, unit: ai.unit || "ללא מחלקה", status: "BASE", is_active: true }
-      ]);
-      if (error) return bot.sendMessage(chatId, `❌ לא הצלחתי להוסיף את ${ai.name}. יתכן שהוא כבר קיים.`);
-      return bot.sendMessage(chatId, `✅ חייל חדש נוסף למאגר: ${ai.name}.`);
+      await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, status: "BASE", is_active: true }]);
+      return bot.sendMessage(chatId, `✅ ${ai.name} נוסף למאגר.`);
     }
 
-    // --- איפוס חכם ---
     if (ai.type === "reset") {
       let q = supabase.from("soldiers").update({ is_active: false, status: "BASE", mission: "ללא משימה" });
-      if (ai.unit && ai.unit !== "ALL") {
-        await q.eq("unit", ai.unit);
-        return bot.sendMessage(chatId, `🫡 מחלקת **${ai.unit}** אופסה.`);
-      } else {
-        await q.neq("name", "dummy");
-        await q;
-        return bot.sendMessage(chatId, `🫡 כל הדוח אופס.`);
-      }
+      if (ai.unit && ai.unit !== "ALL") await q.eq("unit", ai.unit);
+      else await q.neq("name", "dummy");
+      return bot.sendMessage(chatId, `🫡 אופס.`);
     }
 
-    // --- עדכון סטטוס/משימה רגיל ---
     if (ai.type === "update" && ai.updates) {
       let count = 0;
       for (let u of ai.updates) {
-        let updateFields = { is_active: true };
-        if (u.status) updateFields.status = u.status;
-        if (u.mission) updateFields.mission = u.mission;
-
-        let q = supabase.from("soldiers").update(updateFields);
+        let fields = { is_active: true };
+        if (u.status) fields.status = u.status;
+        if (u.mission) fields.mission = u.mission;
+        let q = supabase.from("soldiers").update(fields);
         if (u.name) q = q.ilike("name", `%${u.name.replace(/[-\s]/g, '%')}%`);
-        else if (u.unit) q = q.eq("unit", u.unit);
-        
         const { data } = await q.select();
         if (data) count += data.length;
       }
       if (count > 0) return bot.sendMessage(chatId, ai.text);
-      else return bot.sendMessage(chatId, "🤔 לא מצאתי את השמות האלו במאגר. (להוספה השתמש ב-***הוספת שם:)");
+      else return bot.sendMessage(chatId, "לא מצאתי את השמות במאגר.");
     }
 
-    if (ai.type === "chat") {
-      bot.sendMessage(chatId, ai.text);
-    }
+    if (ai.type === "chat") bot.sendMessage(chatId, ai.text);
 
-  } catch (e) {
-    console.error("AI Logic Error:", e);
-    bot.sendMessage(chatId, "הייתה לי תקלה בעיבוד. נסה שוב בעוד רגע.");
-  }
+  } catch (e) { bot.sendMessage(chatId, "תקלה קטנה, נסה שוב."); }
 });
 
 // ==========================================
-// פונקציית AI (Gemini)
+// פונקציות עזר (AI ודוח)
 // ==========================================
 async function askAi(input, data, senderName) {
-  const prompt = `אתה סמב"ץ פלוגתי בשם ג'מיני. המשתמש: ${senderName}. 
-  המאגר הקיים: ${JSON.stringify(data.map((s) => ({ name: s.name, unit: s.unit })))}.
+  const prompt = `אתה סמב"ץ פלוגתי. משתמש: ${senderName}. 
+  מאגר: ${JSON.stringify(data.map(s => ({ name: s.name, unit: s.unit })))}.
   הודעה: "${input}". 
-
-  חוקים קשיחים לניהול מאגר:
-  1. שינוי שם: רק אם ההודעה מתחילה ב-"***שינוי שם:", החזר: {"type":"rename", "oldName":"השם שלפני החץ", "newName":"השם שאחרי החץ"}.
-  2. הוספת שם: רק אם ההודעה מתחילה ב-"***הוספת שם:", החזר: {"type":"add", "name":"השם שצוין", "unit":"זהה מחלקה מהטקסט או השאר ריק"}.
-  
-  חוקים לתפעול שוטף:
-  3. איפוס: אם מבקשים לאפס, החזר: {"type":"reset", "unit":"ALL או שם מחלקה"}.
-  4. עדכון דוח: לכל הודעה אחרת, עדכן רק סטטוס (BASE/HOME) או משימה. אל תיצור שמות חדשים!
-     החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "text":"אישור קצר"}.
-  5. אם זו סתם הודעה, החזר: {"type":"chat", "text":"תשובה ידידותית"}.
-
+  חוקים:
+  1. שינוי שם: רק עם "***שינוי שם:".
+  2. הוספה: רק עם "***הוספת שם:".
+  3. איפוס: reset.
+  4. עדכון: updates לסטטוס/משימה.
+  5. שיחה: chat.
   החזר JSON בלבד!`;
 
   const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
   const options = {
     hostname: "generativelanguage.googleapis.com",
     path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
+    method: "POST", headers: { "Content-Type": "application/json" }
   };
 
   return new Promise((resolve) => {
     const req = https.request(options, (res) => {
       let b = "";
-      res.on("data", (d) => (b += d));
+      res.on("data", d => b += d);
       res.on("end", () => {
         try {
-          const jsonResponse = JSON.parse(b);
-          let raw = jsonResponse.candidates[0].content.parts[0].text;
+          let raw = JSON.parse(b).candidates[0].content.parts[0].text;
           const start = raw.indexOf("{"), end = raw.lastIndexOf("}");
           resolve(JSON.parse(raw.substring(start, end + 1)));
-        } catch (e) { resolve({ type: "chat", text: "לא הבנתי, נסה שוב." }); }
+        } catch (e) { resolve({ type: "chat", text: "לא הבנתי." }); }
       });
     });
-    req.write(postData);
-    req.end();
+    req.write(postData); req.end();
   });
 }
 
-// ==========================================
-// פונקציית יצירת הדוח המעודכנת
-// ==========================================
 function generateFixedReport(soldiers) {
-  // יצירת תאריך ויום בעברית
   const now = new Date();
   const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
   const dayName = days[now.getDay()];
-  const dateStr = now.toLocaleDateString('he-IL', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric'
-  }).replace(/\//g, '.');
-
-  let r = `**יום ${dayName} ${dateStr}**\n\n`;
-  r += "*סד''כ מחלקות* 🪖\n\n";
+  const d = String(now.getDate()).padStart(2, '0'), m = String(now.getMonth() + 1).padStart(2, '0'), y = now.getFullYear();
   
-  const totalAll = soldiers.length;
-  const totalBaseAll = soldiers.filter(s => s.status === "BASE").length;
-  const totalHomeAll = soldiers.filter(s => s.status === "HOME").length;
-
+  let r = `**יום ${dayName} ${d}.${m}.${y}**\n\n*סד''כ מחלקות* 🪖\n\n`;
+  
   VALID_UNITS.forEach((u) => {
     const unitSolds = soldiers.filter(s => s.unit === u);
     r += `*${u}:*\n`;
-    
-    if (unitSolds.length === 0) {
-      r += `${RLM}---\n\n`;
-      return;
-    }
-
-    const inBase = unitSolds.filter(s => s.status === "BASE");
-    const inHome = unitSolds.filter(s => s.status === "HOME");
-
-    if (inBase.length > 0) r += `בבסיס (${inBase.length}):\n${inBase.map(s => s.name).join("\n")}\n\n`;
-    if (inHome.length > 0) r += `בבית (${inHome.length}):\n${inHome.map(s => s.name).join("\n")}\n\n`;
-    
-    r += `סה"כ: ${inBase.length}/${unitSolds.length}.\n\n`;
+    if (unitSolds.length === 0) { r += `${RLM}---\n\n`; return; }
+    const inB = unitSolds.filter(s => s.status === "BASE"), inH = unitSolds.filter(s => s.status === "HOME");
+    if (inB.length > 0) r += `בבסיס (${inB.length}):\n${inB.map(s => s.name).join("\n")}\n\n`;
+    if (inH.length > 0) r += `בבית (${inH.length}):\n${inH.map(s => s.name).join("\n")}\n\n`;
+    r += `סה"כ: ${inB.length}/${unitSolds.length}.\n\n`;
   });
 
   r += "---------------------------------\n\n*שיבוץ משימות* ⚡️\n\n";
-  const missions = ['חפ"ק מ"פ', 'חפ"ק סמ"פ', 'חפ"ק מ"מ 1', 'חפ"ק מ"מ 2', 'חפ"ק מ"מ 3', 'חפ"ק עתודה', 'משאית'];
-  
-  missions.forEach((m) => {
+  const mis = ['חפ"ק מ"פ', 'חפ"ק סמ"פ', 'חפ"ק מ"מ 1', 'חפ"ק מ"מ 2', 'חפ"ק מ"מ 3', 'חפ"ק עתודה', 'משאית'];
+  mis.forEach(m => {
     const assigned = soldiers.filter(s => (s.mission || "").includes(m.replace(/['"״]/g, '')));
-    r += `*${m}:*\n`;
-    r += assigned.length > 0 ? `${assigned.map(s => s.name).join("\n")}\n\n` : `${RLM}---\n\n`;
+    r += `*${m}:*\n${assigned.length > 0 ? assigned.map(s => s.name).join("\n") : RLM + "---"}\n\n`;
   });
 
-  r += "---------------------------------\n\n📊 *סיכום:*\n";
-  r += `סה"כ: ${totalAll}.\nבבסיס: ${totalBaseAll}.\nבבית: ${totalHomeAll}.`;
-
+  const bAll = soldiers.filter(s => s.status === "BASE").length, hAll = soldiers.filter(s => s.status === "HOME").length;
+  r += `---------------------------------\n\n📊 *סיכום:*\nסה"כ: ${soldiers.length}.\nבבסיס: ${bAll}.\nבבית: ${hAll}.`;
   return r;
 }
