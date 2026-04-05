@@ -11,7 +11,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 
 if (!TELEGRAM_TOKEN || !GEMINI_KEY || !SUPABASE_URL || !SUPABASE_KEY) {
-  console.error("❌ שגיאה: חסרים מפתחות! ודא שהגדרת אותם ב-Render או ב-.env");
+  console.error("❌ שגיאה: חסרים מפתחות ב-Render או ב-.env");
   process.exit(1);
 }
 
@@ -27,7 +27,7 @@ http.createServer((req, res) => {
   res.end();
 }).listen(process.env.PORT || 3000);
 
-console.log("🚀 בוט סמב''ץ גרסה 45 - ניהול מאגר קשיח בלבד!");
+console.log("🚀 בוט סמב''ץ גרסה 46 - דוח עם תאריך ויום אוטומטי!");
 
 // ==========================================
 // לוגיקת קבלת הודעות
@@ -47,19 +47,19 @@ bot.on("message", async (msg) => {
     return bot.sendMessage(chatId, generateFixedReport(data || []), { parse_mode: "Markdown" });
   }
 
-  // 2. עיבוד פקודות באמצעות AI (הכל עובר דרך ה-AI כדי להגן על המאגר)
+  // 2. עיבוד פקודות באמצעות AI
   try {
     const { data: allSoldiers } = await supabase.from("soldiers").select("*");
     const ai = await askAi(text, allSoldiers || [], senderName);
 
-    // --- פקודת שינוי שם (רק אם ה-AI זיהה את הפורמט הקשיח) ---
+    // --- פקודת שינוי שם ---
     if (ai.type === "rename") {
       const { error } = await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
       if (error) return bot.sendMessage(chatId, `❌ שגיאה בשינוי השם. ודא שהשם "${ai.oldName}" קיים במאגר.`);
       return bot.sendMessage(chatId, `✅ המאגר עודכן: השם ${ai.oldName} שונה ל-${ai.newName}.`);
     }
 
-    // --- פקודת הוספת חייל חדש (רק אם ה-AI זיהה את הפורמט הקשיח) ---
+    // --- פקודת הוספת חייל חדש ---
     if (ai.type === "add") {
       const { error } = await supabase.from("soldiers").insert([
         { name: ai.name, unit: ai.unit || "ללא מחלקה", status: "BASE", is_active: true }
@@ -81,11 +81,12 @@ bot.on("message", async (msg) => {
       }
     }
 
-    // --- עדכון סטטוס/משימה רגיל (לא משנה את המאגר הקבוע) ---
+    // --- עדכון סטטוס/משימה רגיל ---
     if (ai.type === "update" && ai.updates) {
       let count = 0;
       for (let u of ai.updates) {
-        let updateFields = { status: u.status, is_active: true };
+        let updateFields = { is_active: true };
+        if (u.status) updateFields.status = u.status;
         if (u.mission) updateFields.mission = u.mission;
 
         let q = supabase.from("soldiers").update(updateFields);
@@ -99,7 +100,6 @@ bot.on("message", async (msg) => {
       else return bot.sendMessage(chatId, "🤔 לא מצאתי את השמות האלו במאגר. (להוספה השתמש ב-***הוספת שם:)");
     }
 
-    // --- שיחה רגילה ---
     if (ai.type === "chat") {
       bot.sendMessage(chatId, ai.text);
     }
@@ -124,7 +124,7 @@ async function askAi(input, data, senderName) {
   
   חוקים לתפעול שוטף:
   3. איפוס: אם מבקשים לאפס, החזר: {"type":"reset", "unit":"ALL או שם מחלקה"}.
-  4. עדכון דוח: לכל הודעה אחרת (כולל רשימות עם ":"), עדכן רק סטטוס (BASE/HOME) או משימה. אל תיצור שמות חדשים! אם שם לא במאגר, התעלם ממנו.
+  4. עדכון דוח: לכל הודעה אחרת, עדכן רק סטטוס (BASE/HOME) או משימה. אל תיצור שמות חדשים!
      החזר: {"type":"update", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "text":"אישור קצר"}.
   5. אם זו סתם הודעה, החזר: {"type":"chat", "text":"תשובה ידידותית"}.
 
@@ -157,10 +157,21 @@ async function askAi(input, data, senderName) {
 }
 
 // ==========================================
-// פונקציית יצירת הדוח
+// פונקציית יצירת הדוח המעודכנת
 // ==========================================
 function generateFixedReport(soldiers) {
-  let r = "*סד''כ מחלקות* 🪖\n\n";
+  // יצירת תאריך ויום בעברית
+  const now = new Date();
+  const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
+  const dayName = days[now.getDay()];
+  const dateStr = now.toLocaleDateString('he-IL', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric'
+  }).replace(/\//g, '.');
+
+  let r = `**יום ${dayName} ${dateStr}**\n\n`;
+  r += "*סד''כ מחלקות* 🪖\n\n";
   
   const totalAll = soldiers.length;
   const totalBaseAll = soldiers.filter(s => s.status === "BASE").length;
