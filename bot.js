@@ -17,7 +17,7 @@ const RLM = "\u200f";
 
 http.createServer((req, res) => { res.write("Bot is running!"); res.end(); }).listen(process.env.PORT || 3000);
 
-console.log("🚀 בוט סמב''ץ גרסה 41 - ה-AI מנהל הכל (בלי תלות בנקודתיים).");
+console.log("🚀 גרסה 42 באוויר - חסימת עדכון מאגר אוטומטי פעילה.");
 
 bot.on("message", async (msg) => {
   if (!msg.text) return;
@@ -25,7 +25,7 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const senderName = msg.from.first_name || "מפקד";
 
-  // 1. בדיקת דוח מהירה (ללא AI)
+  // 1. דוח מהיר
   const isReport = ["דוח", "מצב", "תמונה", "סיכום", "סטטוס"].some(k => text.includes(k));
   const isReset = ["איפוס", "תאפס", "לאפס", "נקה"].some(k => text.includes(k));
 
@@ -34,19 +34,20 @@ bot.on("message", async (msg) => {
     return bot.sendMessage(chatId, generateFixedReport(data || []), { parse_mode: "Markdown" });
   }
 
-  // 2. עיבוד כל שאר ההודעות דרך ה-AI
+  // 2. עיבוד כל הודעה דרך ה-AI (ביטלנו את לוגיקת הנקודתיים העצמאית!)
   try {
     const { data: allSoldiers } = await supabase.from("soldiers").select("*");
     const ai = await askAi(text, allSoldiers || [], senderName);
 
-    // א. שינוי שם
-    if (ai.type === "rename") {
-      await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
+    // א. שינוי שם (רק עם פקודה מפורשת)
+    if (ai.type === "rename" && ai.newName && ai.oldName) {
+      const { error } = await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
+      if (error) return bot.sendMessage(chatId, `❌ לא מצאתי את "${ai.oldName}" במאגר.`);
       return bot.sendMessage(chatId, `✅ השם שונה מ-${ai.oldName} ל-${ai.newName}.`);
     }
 
     // ב. הוספת חייל חדש (רק עם פקודה מפורשת)
-    if (ai.type === "add") {
+    if (ai.type === "add" && ai.name && ai.unit) {
       await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, status: "BASE", is_active: true }]);
       return bot.sendMessage(chatId, `✅ ${ai.name} נוסף למחלקת ${ai.unit}.`);
     }
@@ -59,7 +60,7 @@ bot.on("message", async (msg) => {
       return bot.sendMessage(chatId, `🫡 הדוח אופס (${ai.unit === "ALL" ? "הכל" : ai.unit}).`);
     }
 
-    // ד. עדכון סטטוס / משימה / רשימות (החלק החכם)
+    // ד. עדכון סטטוס / משימה (החלק שאתה משתמש בו בשוטף)
     if (ai.type === "update" && ai.updates) {
       let count = 0;
       for (let u of ai.updates) {
@@ -68,37 +69,38 @@ bot.on("message", async (msg) => {
         if (u.mission) fields.mission = u.mission;
 
         let q = supabase.from("soldiers").update(fields);
-        // חיפוש גמיש לפי שם
-        if (u.name) q = q.ilike("name", `%${u.name.replace(/[-\s]/g, '%')}%`);
-        else if (u.unit) q = q.eq("unit", u.unit);
-
+        // מחפשים רק את מי שכבר קיים במאגר!
+        if (u.name) {
+          const cleanName = u.name.replace(/[-\s]/g, '%');
+          q = q.ilike("name", `%${cleanName}%`);
+        }
         const { data } = await q.select();
         if (data) count += data.length;
       }
       if (count > 0) return bot.sendMessage(chatId, ai.text);
-      return bot.sendMessage(chatId, `🤔 ${senderName}, לא מצאתי שמות מתאימים במאגר.`);
+      return bot.sendMessage(chatId, `🤔 ${senderName}, לא מצאתי אף אחד מהשמות האלו במאגר הפלוגתי.`);
     }
 
     // ה. שיחה רגילה
     if (ai.type === "chat") bot.sendMessage(chatId, ai.text);
 
   } catch (e) {
-    bot.sendMessage(chatId, "הייתה לי תקלה קטנה. נסה שוב.");
+    console.error("Error:", e);
+    bot.sendMessage(chatId, "הייתה לי תקלה. נסה שוב.");
   }
 });
 
 async function askAi(input, data, senderName) {
   const prompt = `אתה סמב"ץ פלוגתי. המשתמש: ${senderName}. 
-  מחלקות: ${VALID_UNITS.join(", ")}.
-  משימות: חפ"ק מ"פ, חפ"ק סמ"פ, חפ"ק מ"מ 1, חפ"ק מ"מ 2, חפ"ק מ"מ 3, חפ"ק עתודה, משאית.
-  מאגר קיים (שמות ומחלקות): ${JSON.stringify(data.map(s => ({ name: s.name, unit: s.unit })))}$.
-  הודעה: "${input}". 
+  מחלקות מותרות בלבד: ${VALID_UNITS.join(", ")}.
+  משימות מותרות: חפ"ק מ"פ, חפ"ק סמ"פ, חפ"ק מ"מ 1, חפ"ק מ"מ 2, חפ"ק מ"מ 3, חפ"ק עתודה, משאית.
+  מאגר שמות קיים: ${JSON.stringify(data.map(s => s.name))}.
 
-  חוקים:
-  1. אם זו רשימה תחת כותרת (למשל "חפ"ק מ"מ 1: שמות"), זה עדכון משימה לכולם.
-  2. אם זו רשימה תחת "בבית:" או "בבסיס:", זה עדכון סטטוס.
-  3. אם זו פקודת "***שינוי שם" או "***עדכון", פעל לפי הסוגים rename/add.
-  4. החזר JSON: {"type":"update/rename/add/reset/chat", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "oldName":"שם", "newName":"שם", "unit":"מחלקה", "text":"תשובה"}`;
+  חוקים קשיחים:
+  1. אין ליצור שמות חדשים אלא אם המשתמש כתב במפורש "***עדכון".
+  2. הודעה כמו "חפ"ק מ"פ: שם, שם" היא עדכון משימה (mission) לשמות הקיימים.
+  3. אם שם לא קיים במאגר, התעלם ממנו ב-updates.
+  4. החזר JSON בלבד: {"type":"update/rename/add/reset/chat", "updates":[{"name":"שם", "status":"BASE/HOME", "mission":"משימה"}], "oldName":"שם", "newName":"שם", "unit":"מחלקה", "text":"תשובה"}`;
 
   const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
   const options = {
@@ -116,7 +118,7 @@ async function askAi(input, data, senderName) {
           let raw = JSON.parse(b).candidates[0].content.parts[0].text;
           const start = raw.indexOf("{"), end = raw.lastIndexOf("}");
           resolve(JSON.parse(raw.substring(start, end + 1)));
-        } catch (e) { resolve({ type: "chat", text: "לא הבנתי." }); }
+        } catch (e) { resolve({ type: "chat", text: "לא הצלחתי לעבד את הבקשה." }); }
       });
     });
     req.write(postData); req.end();
