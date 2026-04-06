@@ -20,14 +20,18 @@ http.createServer((req, res) => { res.write("Bot V50.1 Active"); res.end(); }).l
 
 const GROUP_CHAT_ID = "-1003748361029"; 
 
-console.log("🚀 גרסה 50.1 - תיקון זיהוי רשימות ותאריכים.");
+console.log("🚀 גרסה 50.1 (כולל לוגים למעקב) - המערכת עלתה לאוויר.");
 
-// תזמון הודעות (Cron) - נשאר בדיוק אותו דבר
+// ==========================================
+// תזמון הודעות (Cron)
+// ==========================================
 cron.schedule('0 18 * * 0,1,2,3,6', () => {
+  console.log("⏰ מפעיל תזכורת יומית (שבת-רביעי)...");
   if (GROUP_CHAT_ID) bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת:* נא לשלוח דוח 1 למחר!", { parse_mode: "Markdown" });
 }, { scheduled: true, timezone: "Asia/Jerusalem" });
 
 cron.schedule('0 18 * * 4', () => {
+  console.log("⏰ מפעיל תזכורת סופ\"ש (חמישי)...");
   if (GROUP_CHAT_ID) bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת סופ\"ש:* נא לשלוח דוח 1 לשישי-שבת!", { parse_mode: "Markdown" });
 }, { scheduled: true, timezone: "Asia/Jerusalem" });
 
@@ -40,63 +44,87 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const senderName = msg.from.first_name || "מפקד";
 
+  console.log(`\n📥 התקבלה הודעה חדשה מ-${senderName} בצ'אט ${chatId}:`);
+  console.log(`טקסט: "${text}"`);
+
   if (text.startsWith("/id")) {
+    console.log("⚡ זוהתה פקודת /id. שולח חזרה ומסיים עיבוד.");
     return bot.sendMessage(chatId, `ה-ID של הצ'אט הזה הוא: \`${chatId}\``, { parse_mode: "Markdown" });
   }
 
   try {
-    // שליפת שמות מהמאגר לטובת ה-AI
+    console.log("🔍 שולף שמות מהמאגר לטובת ה-AI...");
     const { data: allSoldiers } = await supabase.from("soldiers").select("name, unit");
+    
+    console.log("🧠 שולח את ההודעה לניתוח ב-Gemini AI...");
     const ai = await askAi(text, allSoldiers || [], senderName);
+    
+    console.log("🤖 תגובת ה-AI (JSON):", JSON.stringify(ai, null, 2));
 
     // 1. בדיקת דוח 1
     const isReportReq = ["דוח", "מצב", "סטטוס"].some(k => text.includes(k));
     if (ai.type === "show_report" || (isReportReq && ai.type !== "update")) {
       const targetDate = ai.targetDate || new Date().toISOString().split('T')[0];
+      console.log(`📊 מכין דוח לתאריך: ${targetDate}...`);
       const { data } = await supabase.from("soldiers").select("*").eq("report_date", targetDate);
+      console.log(`נמצאו ${data ? data.length : 0} רשומות לדוח זה.`);
       return bot.sendMessage(chatId, generateFixedReport(data || [], targetDate), { parse_mode: "Markdown" });
     }
 
-    // 2. עדכון רשימה (כמו ההודעה של מחלקה 1)
+    // 2. עדכון רשימה 
     if (ai.type === "update" && ai.updates) {
       let count = 0;
       const dates = ai.dates || [new Date().toISOString().split('T')[0]];
+      console.log(`✍️ מתחיל עדכון רשימות עבור התאריכים: ${dates.join(", ")}`);
 
       for (const date of dates) {
         for (let u of ai.updates) {
-          // מציאת היחידה של החייל מהמאגר אם לא צוינה בהודעה
           const soldierInfo = allSoldiers.find(s => s.name.includes(u.name) || u.name.includes(s.name));
+          const finalUnit = u.unit || soldierInfo?.unit || ai.unit || "ללא מחלקה";
+          
+          console.log(`מנסה לעדכן/להוסיף: שם=${u.name}, תאריך=${date}, סטטוס=${u.status || "BASE"}`);
           
           const { data, error } = await supabase.from("soldiers").upsert({
             name: u.name,
-            unit: u.unit || soldierInfo?.unit || ai.unit || "ללא מחלקה",
+            unit: finalUnit,
             status: u.status || "BASE",
             mission: u.mission || "ללא משימה",
             report_date: date,
             is_active: true
           }, { onConflict: 'name, report_date' }).select();
           
-          if (!error && data) count += data.length;
+          if (error) {
+            console.error(`❌ שגיאה מול Supabase בעדכון ${u.name}:`, error);
+          } else if (data) {
+            count += data.length;
+          }
         }
       }
+      console.log(`✅ עדכון הסתיים. סה"כ עודכנו ${count} רשומות.`);
       return bot.sendMessage(chatId, count > 0 ? `✅ עודכן דוח ליום ${dates.join(", ")} (${count} חיילים).` : "לא מצאתי שמות מוכרים במאגר.");
     }
 
-    // 3. שינוי שם / הוספה (עם המאפיינים הקשיחים שלך)
+    // 3. שינוי שם / הוספה
     if (ai.type === "rename") {
+      console.log(`🔄 מחליף שם מ-${ai.oldName} ל-${ai.newName}`);
       await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
       return bot.sendMessage(chatId, `✅ השם שונה מ-${ai.oldName} ל-${ai.newName}.`);
     }
 
     if (ai.type === "add") {
-      await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, status: "BASE", is_active: true, report_date: new Date().toISOString().split('T')[0] }]);
+      const todayStr = new Date().toISOString().split('T')[0];
+      console.log(`➕ מוסיף שם חדש: ${ai.name} למחלקת ${ai.unit} בתאריך ${todayStr}`);
+      await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, status: "BASE", is_active: true, report_date: todayStr }]);
       return bot.sendMessage(chatId, `✅ ${ai.name} נוסף למאגר.`);
     }
 
-    if (ai.type === "chat") bot.sendMessage(chatId, ai.text);
+    if (ai.type === "chat") {
+      console.log("💬 ה-AI זיהה כשיחה רגילה. שולח תשובה טקסטואלית.");
+      bot.sendMessage(chatId, ai.text);
+    }
 
   } catch (e) { 
-    console.error(e);
+    console.error("🔴 שגיאה כללית בלוגיקת הבוט:", e);
     bot.sendMessage(chatId, "לא הבנתי את ההודעה, נסה שוב."); 
   }
 });
