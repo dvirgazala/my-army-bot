@@ -25,7 +25,7 @@ console.log("🚀 גרסה 50.1 (כולל לוגים למעקב) - המערכת 
 // ==========================================
 // תזמון הודעות (Cron)
 // ==========================================
-cron.schedule('0 18 * * 0,1,2,3,6', () => {
+cron.schedule('04 12 * * *', () => {
   console.log("⏰ מפעיל תזכורת יומית (שבת-רביעי)...");
   if (GROUP_CHAT_ID) bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת:* נא לשלוח דוח 1 למחר!", { parse_mode: "Markdown" });
 }, { scheduled: true, timezone: "Asia/Jerusalem" });
