@@ -16,23 +16,20 @@ const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
 const VALID_UNITS = ['מפל"ג', "מחלקה 1", "מחלקה 2", "מחלקה 3", "חובשים"];
 const RLM = "\u200f";
 
-// שרת דמה ל-Render כדי שלא יירדם
-http.createServer((req, res) => { res.write("Bot V53.1 Active"); res.end(); }).listen(process.env.PORT || 3000);
+http.createServer((req, res) => { res.write("Bot V55 Active"); res.end(); }).listen(process.env.PORT || 3000);
 
 const GROUP_CHAT_ID = "-1003748361029"; 
 
-console.log("🚀 גרסה 53.1 - כולל שומר סף מדויק והנחיות AI מורחבות לכוכבית!");
+console.log("🚀 גרסה 55 - כולל חסימת חיילים שלא במצבת (Validation)!");
 
 // ==========================================
-// תזמון הודעות (Cron) - שעון ישראל
+// תזמון הודעות (Cron)
 // ==========================================
 cron.schedule('0 18 * * 0,1,2,3,6', () => {
-  console.log("⏰ מפעיל תזכורת יומית (שבת-רביעי)...");
   if (GROUP_CHAT_ID) bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת:* נא לשלוח דוח 1 למחר!", { parse_mode: "Markdown" });
 }, { scheduled: true, timezone: "Asia/Jerusalem" });
 
 cron.schedule('0 18 * * 4', () => {
-  console.log("⏰ מפעיל תזכורת סופ\"ש (חמישי)...");
   if (GROUP_CHAT_ID) bot.sendMessage(GROUP_CHAT_ID, "⚠️ *תזכורת סופ\"ש:* נא לשלוח דוח 1 לשישי-שבת!", { parse_mode: "Markdown" });
 }, { scheduled: true, timezone: "Asia/Jerusalem" });
 
@@ -45,145 +42,136 @@ bot.on("message", async (msg) => {
   const chatId = msg.chat.id;
   const senderName = msg.from.first_name || "מפקד";
 
-  // פקודת ID עוקפת הכל
-  if (text.startsWith("/id")) {
-    console.log("⚡ זוהתה פקודת /id.");
-    return bot.sendMessage(chatId, `ה-ID של הצ'אט הזה הוא: \`${chatId}\``, { parse_mode: "Markdown" });
-  }
+  if (text.startsWith("/id")) return bot.sendMessage(chatId, `ID: \`${chatId}\``);
 
-  // --- התחלת שומר הסף (המסננת החכמה) ---
+  // --- שומר הסף ---
   const isGroup = chatId < 0; 
-  
-  // 1. עדכון מהיר בכוכבית (למשל: *דביר גזלה בבית)
   const isQuickUpdate = text.startsWith("*");
-  
-  // 2. דיווח מלא (נקודתיים + ירידת שורה)
-  const hasStatusHeader = text.includes("בבית:") || text.includes("בבסיס:");
-  const isMultiLine = text.includes("\n");
-  const isFullReport = hasStatusHeader && isMultiLine;
-  
-  // 3. פקודות מערכת (דוח 1, הוספת שם, פקודות /)
-  const systemCommands = ["דוח 1", "***שינוי", "***הוספת", "איפוס"];
-  const isCommand = systemCommands.some(cmd => text.includes(cmd)) || text.startsWith("/");
+  const isFullReport = (text.includes("בבית:") || text.includes("בבסיס:")) && text.includes("\n");
+  const isCommand = ["דוח 1", "***שינוי", "***הוספת", "איפוס"].some(cmd => text.includes(cmd)) || text.startsWith("/");
 
-  // החלטה: האם לעבד את ההודעה?
-  const shouldProcess = isQuickUpdate || isFullReport || isCommand;
+  if (isGroup && !isQuickUpdate && !isFullReport && !isCommand) return; 
 
-  if (isGroup && !shouldProcess) {
-    console.log(`🙈 מסננת הופעלה - התעלמות משיחת חולין: "${text.replace(/\n/g, " ").substring(0, 30)}..."`);
-    return; 
-  }
-  // --- סוף שומר הסף ---
-
-  console.log(`\n📥 הודעה עברה סינון מ-${senderName}: "${text}"`);
+  console.log(`\n📥 הודעה עברה סינון מ-${senderName}: "${text.substring(0, 30)}..."`);
 
   try {
-    console.log("🔍 שולף שמות מהמאגר לטובת ה-AI...");
-    const { data: allSoldiers } = await supabase.from("soldiers").select("name, unit");
+    // שליפת המצבת הקבועה
+    const { data: roster } = await supabase.from("soldiers").select("name, unit").eq("is_active", true);
     
     console.log("🧠 שולח לניתוח ב-Gemini...");
-    const ai = await askAi(text, allSoldiers || [], senderName);
-    
-    console.log("🤖 תגובת ה-AI (JSON):", JSON.stringify(ai, null, 2));
+    const ai = await askAi(text, roster || [], senderName);
 
     // 1. בקשת דוח
     const isReportReq = ["דוח", "מצב", "סטטוס"].some(k => text.includes(k));
     if (ai.type === "show_report" || (isReportReq && ai.type !== "update")) {
       const targetDate = ai.targetDate || new Date().toISOString().split('T')[0];
-      console.log(`📊 מכין דוח לתאריך: ${targetDate}...`);
-      const { data } = await supabase.from("soldiers").select("*").eq("report_date", targetDate);
-      return bot.sendMessage(chatId, generateFixedReport(data || [], targetDate), { parse_mode: "Markdown" });
+      const { data: dailyUpdates } = await supabase.from("report_data").select("*").eq("report_date", targetDate);
+      
+      const mergedData = (roster || []).map(soldier => {
+        const update = (dailyUpdates || []).find(u => u.name === soldier.name);
+        return {
+          name: soldier.name,
+          unit: soldier.unit,
+          status: update ? update.status : "BASE",
+          mission: update ? update.mission : "ללא משימה"
+        };
+      });
+
+      return bot.sendMessage(chatId, generateFixedReport(mergedData, targetDate), { parse_mode: "Markdown" });
     }
 
-    // 2. עדכון רשימה או עדכון מהיר בכוכבית
+    // 2. עדכון רשימה/כוכבית (עם חסימת זרים)
     if (ai.type === "update" && ai.updates && ai.updates.length > 0) {
       let count = 0;
+      let unknownNames = []; // מערך לשמירת שמות שלא קיימים במצבת
       const dates = ai.dates && ai.dates.length > 0 ? ai.dates : [new Date().toISOString().split('T')[0]];
-      console.log(`✍️ מתחיל עדכון עבור התאריכים: ${dates.join(", ")}`);
 
       for (const date of dates) {
         for (let u of ai.updates) {
-          const soldierInfo = allSoldiers.find(s => s.name.includes(u.name) || u.name.includes(s.name));
-          const finalUnit = u.unit || soldierInfo?.unit || ai.unit || "ללא מחלקה";
-          
-          console.log(`מעדכן: שם=${u.name}, תאריך=${date}, סטטוס=${u.status || "BASE"}`);
-          
-          const { data, error } = await supabase.from("soldiers").upsert({
-            name: u.name,
-            unit: finalUnit,
+          // בדיקה האם השם קיים במצבת
+          const soldierInfo = (roster || []).find(s => s.name === u.name || s.name.includes(u.name) || u.name.includes(s.name));
+
+          if (!soldierInfo) {
+            // אם לא נמצא, נוסיף לרשימת השגויים ונדלג על העדכון שלו
+            if (!unknownNames.includes(u.name)) unknownNames.push(u.name);
+            console.log(`⚠️ חסימה: השם '${u.name}' לא מופיע במצבת ולכן לא עודכן ביומן.`);
+            continue; 
+          }
+
+          // אם נמצא, ניקח את השם המדויק מהמצבת כדי למנוע טעויות
+          const exactName = soldierInfo.name;
+
+          const { data, error } = await supabase.from("report_data").upsert({
+            name: exactName,
             status: u.status || "BASE",
             mission: u.mission || "ללא משימה",
-            report_date: date,
-            is_active: true
+            report_date: date
           }, { onConflict: 'name, report_date' }).select();
           
-          if (error) console.error(`❌ שגיאה בעדכון ${u.name}:`, error);
-          else if (data) count += data.length;
+          if (error) console.error(`❌ שגיאה בעדכון ביומן ל-${exactName}:`, error);
+          else if (data) count++;
         }
       }
-      const responseText = count > 0 ? `✅ עודכן דוח ליום ${dates.join(", ")} (${count} חיילים).` : "לא מצאתי שמות מוכרים במאגר.";
-      return bot.sendMessage(chatId, responseText);
+
+      // הרכבת הודעת התשובה למשתמש
+      let responseText = "";
+      if (count > 0) responseText += `✅ העדכון נקלט ביומן (${count} חיילים).\n`;
+      if (unknownNames.length > 0) {
+        responseText += `\n⚠️ *שים לב:* השמות הבאים לא מופיעים במצבת הפלוגתית ולכן הרישום שלהם נדחה:\n${unknownNames.map(n => `- ${n}`).join("\n")}\n\n*(ניתן להוסיף אותם למצבת עם הפקודה: \`***הוספת [שם] [מחלקה]\`)*`;
+      }
+      if (count === 0 && unknownNames.length === 0) responseText = "לא בוצעו עדכונים מחוסר נתונים.";
+
+      return bot.sendMessage(chatId, responseText, { parse_mode: "Markdown" });
     }
 
-    // 3. שינוי שם / הוספה
+    // 3. הוספה / שינוי שם
     if (ai.type === "rename") {
-      console.log(`🔄 מחליף שם מ-${ai.oldName} ל-${ai.newName}`);
       await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
-      return bot.sendMessage(chatId, `✅ השם שונה מ-${ai.oldName} ל-${ai.newName}.`);
+      return bot.sendMessage(chatId, `✅ המצבת עודכנה: השם שונה מ-${ai.oldName} ל-${ai.newName}.`);
     }
 
     if (ai.type === "add") {
-      const todayStr = new Date().toISOString().split('T')[0];
-      console.log(`➕ מוסיף שם חדש: ${ai.name}`);
-      await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, status: "BASE", is_active: true, report_date: todayStr }]);
-      return bot.sendMessage(chatId, `✅ ${ai.name} נוסף למאגר.`);
+      await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, is_active: true }]);
+      return bot.sendMessage(chatId, `✅ ${ai.name} נוסף בהצלחה למצבת הקבועה.`);
     }
 
     if (ai.type === "chat") {
-      console.log("💬 ה-AI זיהה כשיחה כללית, שולח את התשובה.");
       bot.sendMessage(chatId, ai.text);
     }
 
   } catch (e) { 
-    console.error("🔴 שגיאה בעיבוד התשובה:", e);
-    bot.sendMessage(chatId, "שגיאה בעיבוד ההודעה, נסה שוב."); 
+    console.error("🔴 שגיאה:", e);
   }
 });
 
 // ==========================================
-// פונקציות עזר (AI ודוח)
+// פונקציות עזר 
 // ==========================================
 async function askAi(input, data, senderName) {
   const todayStr = new Date().toLocaleDateString('he-IL');
   const prompt = `אתה סמב"ץ פלוגתי. היום: ${todayStr}. המשתמש: ${senderName}. 
-  מאגר שמות מוכר: ${JSON.stringify([...new Set(data.map(s => s.name))])}.
-  הודעה מהמשתמש: "${input}". 
+  מאגר: ${JSON.stringify([...new Set(data.map(s => s.name))])}.
+  הודעה: "${input}". 
   
-  חוקים קריטיים:
-  1. עדכון מהיר בכוכבית (*): אם ההודעה מתחילה ב-* (כוכבית), זהו עדכון סטטוס מהיר. השם מופיע מיד אחרי הכוכבית והסטטוס (בבית/בבסיס) מופיע בהמשך השורה. לדוגמה: אם כתוב "*דביר גזלה בבית", הפוך ל-JSON של update עבור דביר גזלה עם status: HOME.
-  2. תאריך: זהה תאריכים כמו "07/04", "מחר", "שישי שבת". הפוך לפורמט YYYY-MM-DD.
-  3. דיווח רשימה: חלץ שמות תחת "בבסיס:" ו-"בבית:" ושייך להם את הסטטוס והתאריך.
-  4. זיהוי שמות: חובה להשתמש בשם המדויק מהמאגר אם יש דמיון קל (למשל "שי-יה" -> "שי יה").
+  חוקים:
+  1. עדכון מהיר בכוכבית (*): אם ההודעה מתחילה ב-* (למשל "*דביר בבית"), הפוך לפקודת update.
+  2. תאריך: זהה תאריכים כמו "07/04", "מחר". הפוך ל-YYYY-MM-DD.
+  3. רשימות: חלץ שמות תחת "בבית:" ו-"בבסיס:".
+  4. השתמש בשמות כפי שהם משתמעים מההודעה. הקוד כבר יבדוק אם הם קיימים במאגר.
   
-  החזר JSON בלבד: {"type":"update/show_report/rename/add/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"שם מחלקה אם צוין", "updates":[{"name":"...", "status":"BASE/HOME", "mission":"..."}], "text":"תשובה קצרה"}`;
+  החזר JSON בלבד: {"type":"update/show_report/rename/add/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"", "updates":[{"name":"...", "status":"BASE/HOME", "mission":"..."}], "text":"..."}`;
 
   const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
-  const options = {
-    hostname: "generativelanguage.googleapis.com",
-    path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
-    method: "POST", headers: { "Content-Type": "application/json" }
-  };
+  const options = { hostname: "generativelanguage.googleapis.com", path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`, method: "POST", headers: { "Content-Type": "application/json" } };
 
   return new Promise((resolve) => {
     const req = https.request(options, (res) => {
-      let b = "";
-      res.on("data", d => b += d);
+      let b = ""; res.on("data", d => b += d);
       res.on("end", () => {
         try {
           let raw = JSON.parse(b).candidates[0].content.parts[0].text;
-          const start = raw.indexOf("{"), end = raw.lastIndexOf("}");
-          resolve(JSON.parse(raw.substring(start, end + 1)));
-        } catch (e) { resolve({ type: "chat", text: "שגיאה בניתוח ההודעה על ידי ה-AI." }); }
+          resolve(JSON.parse(raw.substring(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
+        } catch (e) { resolve({ type: "chat", text: "שגיאה בניתוח." }); }
       });
     });
     req.write(postData); req.end();
@@ -193,10 +181,9 @@ async function askAi(input, data, senderName) {
 function generateFixedReport(soldiers, dateString) {
   const dateObj = new Date(dateString);
   const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
-  const dayName = days[dateObj.getDay()];
   const d = String(dateObj.getDate()).padStart(2, '0'), m = String(dateObj.getMonth() + 1).padStart(2, '0'), y = dateObj.getFullYear();
   
-  let r = `**דוח כ"א ליום ${dayName} ${d}.${m}.${y}**\n\n*סד''כ מחלקות* 🪖\n\n`;
+  let r = `**דוח כ"א ליום ${days[dateObj.getDay()]} ${d}.${m}.${y}**\n\n*סד''כ מחלקות* 🪖\n\n`;
   
   VALID_UNITS.forEach((u) => {
     const unitSolds = soldiers.filter(s => s.unit === u);
@@ -208,14 +195,7 @@ function generateFixedReport(soldiers, dateString) {
     r += `סה"כ: ${inB.length}/${unitSolds.length}.\n\n`;
   });
 
-  r += "---------------------------------\n\n*שיבוץ משימות* ⚡️\n\n";
-  const mis = ['חפ"ק מ"פ', 'חפ"ק סמ"פ', 'חפ"ק מ"מ 1', 'חפ"ק מ"מ 2', 'חפ"ק מ"מ 3', 'חפ"ק עתודה', 'משאית'];
-  mis.forEach(m => {
-    const assigned = soldiers.filter(s => (s.mission || "").includes(m.replace(/['"״]/g, '')));
-    r += `*${m}:*\n${assigned.length > 0 ? assigned.map(s => s.name).join("\n") : RLM + "---"}\n\n`;
-  });
-
-  const bAll = soldiers.filter(s => s.status === "BASE").length, hAll = soldiers.filter(s => s.status === "HOME").length;
-  r += `---------------------------------\n\n📊 *סיכום:*\nסה"כ: ${soldiers.length}.\nבבסיס: ${bAll}.\nבבית: ${hAll}.`;
+  r += "---------------------------------\n\n📊 *סיכום:*\n";
+  r += `סה"כ: ${soldiers.length}.\nבבסיס: ${soldiers.filter(s => s.status === "BASE").length}.\nבבית: ${soldiers.filter(s => s.status === "HOME").length}.`;
   return r;
 }
