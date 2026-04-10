@@ -61,6 +61,11 @@ bot.on("message", async (msg) => {
   // פקודת ID תמיד עובדת
   if (text.startsWith("/id")) return bot.sendMessage(chatId, `ID: \`${chatId}\``);
 
+  // --- חסימת צ'אט פרטי לכל מי שאינו המפקד ---
+  const COMMANDER_ID = 434078287;
+  const isPrivate = chatId > 0;
+  if (isPrivate && chatId !== COMMANDER_ID) return;
+
   // --- שומר הסף ---
   const isGroup = chatId < 0;
   const isAsteriskStart = text.startsWith("*");
