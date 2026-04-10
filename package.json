@@ -2,8 +2,7 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",
     "dotenv": "^17.4.0",
-    "mongoose": "^9.4.1",
-    "node-cron": "^4.2.1",
+"node-cron": "^4.2.1",
     "node-telegram-bot-api": "^0.67.0"
   },
   "name": "bot",

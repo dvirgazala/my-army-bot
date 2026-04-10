@@ -6,7 +6,7 @@ const http = require("http");
 const cron = require("node-cron");
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const GEMINI_KEY = process.env.GEMINI_KEY;
+const OPENQUARRY_KEY = process.env.OPENQUARRY_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 // שם המבצע - ניתן לשינוי ב-Render תחת DEPLOYMENT_NAME
@@ -22,7 +22,7 @@ http.createServer((req, res) => { res.write(`Bot V60.1 Active - Deployment: ${DE
 
 const GROUP_CHAT_ID = "-1003748361029"; 
 
-console.log(`🚀 גרסה 60.1 - מבצע: ${DEPLOYMENT_NAME} | כולל דוח משימות וסיכום מלא`);
+console.log(`🚀 גרסה 60.1 - מבצע: ${DEPLOYMENT_NAME} | מופעל באמצעות Minimax (OpenQuarry)`);
 
 // ==========================================
 // תזמון הודעות (Cron)
@@ -34,6 +34,15 @@ cron.schedule('0 18 * * 0,1,2,3,6', () => {
 cron.schedule('0 18 * * 4', () => {
   if (GROUP_CHAT_ID) bot.sendMessage(GROUP_CHAT_ID, `⚠️ *תזכורת סופ\"ש [${DEPLOYMENT_NAME}]:* נא לשלוח דוח 1 לשישי-שבת!`, { parse_mode: "Markdown" });
 }, { scheduled: true, timezone: "Asia/Jerusalem" });
+
+// ==========================================
+// פונקציות עזר וזמן
+// ==========================================
+function getIsraelDate() {
+  const now = new Date();
+  const israelTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Jerusalem"}));
+  return israelTime.toISOString().split('T')[0];
+}
 
 // ==========================================
 // לוגיקת הודעות ושומר הסף
@@ -58,13 +67,22 @@ bot.on("message", async (msg) => {
 
   try {
     const { data: roster } = await supabase.from("soldiers").select("name, unit").eq("is_active", true);
-    const cleanText = text.startsWith("*") ? text.substring(1).trim() : text;
+    
+    let cleanText = text;
+    if (text.startsWith("***")) {
+        cleanText = text.substring(3).trim();
+    } else if (text.startsWith("*")) {
+        cleanText = text.substring(1).trim();
+    }
+    
     const ai = await askAi(cleanText, roster || [], senderName);
     console.log("🤖 תגובת ה-AI:", JSON.stringify(ai));
 
+    const todayDate = getIsraelDate();
+
     // 0. איפוס דוח (Clear)
     if (ai.type === "clear") {
-      const targetDate = ai.targetDate || new Date().toISOString().split('T')[0];
+      const targetDate = ai.targetDate || todayDate;
       await supabase.from("report_data").delete().eq("report_date", targetDate);
       return bot.sendMessage(chatId, `🧹 **דוח 1 לתאריך ${targetDate} [${DEPLOYMENT_NAME}] אופס בהצלחה!**`);
     }
@@ -72,7 +90,7 @@ bot.on("message", async (msg) => {
     // 1. עדכון גורף (Bulk Update)
     if (ai.type === "bulk_update") {
       let count = 0;
-      const dates = ai.dates || [new Date().toISOString().split('T')[0]];
+      const dates = (ai.dates && ai.dates.length > 0) ? ai.dates : [todayDate];
       const newStatus = ai.status || "BASE";
 
       for (const date of dates) {
@@ -91,7 +109,7 @@ bot.on("message", async (msg) => {
     if (ai.type === "update" && ai.updates && ai.updates.length > 0) {
       let count = 0;
       let unknownNames = []; 
-      const dates = ai.dates || [new Date().toISOString().split('T')[0]];
+      const dates = (ai.dates && ai.dates.length > 0) ? ai.dates : [todayDate];
 
       for (const date of dates) {
         for (let u of ai.updates) {
@@ -101,7 +119,11 @@ bot.on("message", async (msg) => {
             continue; 
           }
           await supabase.from("report_data").upsert({
-            name: soldierInfo.name, status: u.status || "BASE", mission: u.mission || "ללא משימה", report_date: date, deployment_name: DEPLOYMENT_NAME
+            name: soldierInfo.name, 
+            status: u.status || "BASE", 
+            mission: u.mission || "ללא משימה", 
+            report_date: date, 
+            deployment_name: DEPLOYMENT_NAME
           }, { onConflict: 'name, report_date' });
           count++;
         }
@@ -113,7 +135,7 @@ bot.on("message", async (msg) => {
 
     // 3. הצגת דוח
     if (ai.type === "show_report" || (text.includes("דוח") && ai.type === "chat")) {
-      const targetDate = ai.targetDate || new Date().toISOString().split('T')[0];
+      const targetDate = ai.targetDate || todayDate;
       const { data: dailyUpdates } = await supabase.from("report_data").select("*").eq("report_date", targetDate);
       
       const mergedData = (roster || []).map(soldier => {
@@ -146,23 +168,54 @@ bot.on("message", async (msg) => {
 // ==========================================
 async function askAi(input, data, senderName) {
   const todayStr = new Date().toLocaleDateString('he-IL');
-  const prompt = `אתה סמב"ץ פלוגתי. היום: ${todayStr}. מאגר: ${JSON.stringify([...new Set(data.map(s => s.name))])}.
-  הודעה: "${input}". 
-  JSON בלבד: {"type":"update/show_report/rename/add/clear/bulk_update/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"all/מחלקה", "status":"BASE/HOME", "updates":[{"name":"...", "status":"BASE/HOME", "mission":"..."}], "text":"..."}`;
+  const prompt = `אתה סמב"ץ פלוגתי. היום: ${todayStr}.
+מאגר חיילים: ${JSON.stringify([...new Set(data.map(s => s.name))])}.
+משימות רשמיות: ["חפ\\"ק מ\\"פ","חפ\\"ק סמ\\"פ","חפ\\"ק מ\\"מ 1","חפ\\"ק מ\\"מ 2","חפ\\"ק מ\\"מ 3","נהג משאית","מלווה נהג משאית"].
+מחלקות: ["מפל\\"ג","מחלקה 1","מחלקה 2","מחלקה 3","חובשים"].
+הודעה: "${input}".
+חוקים: אם חייל "בבית" → status=HOME. אם "בבסיס" → status=BASE. אם לא צוין → status=BASE. מלא תאריך מדויק לפי היום (YYYY-MM-DD). "מחר"=יום אחרי היום. "סופשב"=שישי ושבת.
+JSON בלבד: {"type":"update/show_report/rename/add/clear/bulk_update/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"all/שם מחלקה", "status":"BASE/HOME", "updates":[{"name":"שם מלא מהמאגר","status":"BASE/HOME","mission":"שם משימה רשמי או ללא משימה"}], "text":"..."}`;
 
-  const postData = JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] });
-  const options = { hostname: "generativelanguage.googleapis.com", path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`, method: "POST", headers: { "Content-Type": "application/json" } };
+  const postData = JSON.stringify({
+    model: "minimax/minimax-m2.5:free",
+    messages: [{ role: "user", content: prompt }],
+    response_format: { type: "json_object" }
+  });
+
+  const options = {
+    hostname: "openrouter.ai",
+    path: "/api/v1/chat/completions",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENQUARRY_KEY}`,
+      "HTTP-Referer": "https://render.com",
+      "X-Title": "Lion-Bot"
+    }
+  };
+
   return new Promise((resolve) => {
     const req = https.request(options, (res) => {
-      let b = ""; res.on("data", d => b += d);
+      let b = "";
+      res.on("data", d => b += d);
       res.on("end", () => {
         try {
-          let raw = JSON.parse(b).candidates[0].content.parts[0].text;
+          const json = JSON.parse(b);
+          if (!json.choices || json.choices.length === 0) throw new Error("No choices in AI response");
+          const raw = json.choices[0].message.content;
           resolve(JSON.parse(raw.substring(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
-        } catch (e) { resolve({ type: "chat" }); }
+        } catch (e) {
+          console.error("❌ AI Error:", b);
+          resolve({ type: "chat" });
+        }
       });
     });
-    req.write(postData); req.end();
+    req.on("error", (e) => {
+      console.error("❌ Request Error:", e);
+      resolve({ type: "chat" });
+    });
+    req.write(postData);
+    req.end();
   });
 }
 
@@ -176,17 +229,24 @@ function generateFixedReport(soldiers, dateString) {
   VALID_UNITS.forEach((u) => {
     const unitSolds = soldiers.filter(s => s.unit === u);
     r += `*${u}:*\n`;
-    if (unitSolds.length === 0) { r += `${RLM}---\n\n`; return; }
-    const inB = unitSolds.filter(s => s.status === "BASE"), inH = unitSolds.filter(s => s.status === "HOME");
-    if (inB.length > 0) r += `בבסיס (${inB.length}):\n${inB.map(s => s.name).join("\n")}\n\n`;
-    if (inH.length > 0) r += `בבית (${inH.length}):\n${inH.map(s => s.name).join("\n")}\n\n`;
+    if (unitSolds.length === 0) {
+      r += `${RLM}--- (אין חיילים רשומים)\n\n`;
+      return;
+    }
+    const inB = unitSolds.filter(s => s.status === "BASE");
+    const inH = unitSolds.filter(s => s.status === "HOME");
+    
+    if (inB.length > 0) r += `🏡 בבסיס (${inB.length}):\n${inB.map(s => s.name).join("\n")}\n\n`;
+    if (inH.length > 0) r += `🏠 בבית (${inH.length}):\n${inH.map(s => s.name).join("\n")}\n\n`;
+    
     r += `סה"כ: ${inB.length}/${unitSolds.length}.\n\n`;
   });
 
   r += "---------------------------------\n\n*שיבוץ משימות* ⚡️\n\n";
-  const mis = ['חפ"ק מ"פ', 'חפ"ק סמ"פ', 'חפ"ק מ"מ 1', 'חפ"ק מ"מ 2', 'חפ"ק מ"מ 3', 'חפ"ק עתודה', 'משאית'];
+  const mis = ['חפ"ק מ"פ', 'חפ"ק סמ"פ', 'חפ"ק מ"מ 1', 'חפ"ק מ"מ 2', 'חפ"ק מ"מ 3', 'נהג משאית', 'מלווה נהג משאית'];
   mis.forEach(m => {
-    const assigned = soldiers.filter(s => (s.mission || "").includes(m.replace(/['"״]/g, '')));
+    const mClean = m.replace(/['"״]/g, '');
+    const assigned = soldiers.filter(s => (s.mission || "").replace(/['"״]/g, '').includes(mClean));
     r += `*${m}:*\n${assigned.length > 0 ? assigned.map(s => s.name).join("\n") : RLM + "---"}\n\n`;
   });
 
