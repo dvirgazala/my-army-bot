@@ -84,7 +84,7 @@ bot.on("message", async (msg) => {
       cleanText = text.substring(1).trim();
     }
 
-    console.log("🧠 פנייה ל-OpenRouter (Minimax)...");
+    console.log("🧠 פנייה ל-Gemini...");
     const ai = await askAi(cleanText, roster || [], senderName);
     console.log("🤖 תגובת ה-AI:", JSON.stringify(ai));
 
@@ -211,39 +211,54 @@ async function askAi(input, data, senderName) {
     generationConfig: { responseMimeType: "application/json" }
   });
 
-  const options = {
-    hostname: "generativelanguage.googleapis.com",
-    path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
-    method: "POST",
-    headers: { "Content-Type": "application/json" }
-  };
+  const MODELS = ["gemini-flash-lite-latest", "gemini-flash-latest", "gemini-2.5-flash"];
 
-  return new Promise((resolve) => {
-    const req = https.request(options, (res) => {
-      let b = "";
-      res.on("data", d => b += d);
-      res.on("end", () => {
-        try {
-          const response = JSON.parse(b);
-          if (response.candidates && response.candidates[0]) {
-            const rawContent = response.candidates[0].content.parts[0].text;
-            console.log("📝 תשובה גולמית מה-AI:", rawContent);
-            const start = rawContent.indexOf("{");
-            const end = rawContent.lastIndexOf("}");
-            resolve(JSON.parse(rawContent.substring(start, end + 1)));
-          } else {
-            console.error("⚠️ תשובת Gemini ריקה:", b);
-            resolve({ type: "chat", text: "לא התקבלה תשובה מה-AI." });
+  function tryModel(model) {
+    return new Promise((resolve, reject) => {
+      const options = {
+        hostname: "generativelanguage.googleapis.com",
+        path: `/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+        method: "POST",
+        headers: { "Content-Type": "application/json" }
+      };
+      const req = https.request(options, (res) => {
+        let b = "";
+        res.on("data", d => b += d);
+        res.on("end", () => {
+          try {
+            const response = JSON.parse(b);
+            if (response.error) return reject({ code: response.error.code, msg: response.error.message });
+            if (response.candidates && response.candidates[0]) {
+              const rawContent = response.candidates[0].content.parts[0].text;
+              console.log(`📝 [${model}] תשובה:`, rawContent.substring(0, 80));
+              const start = rawContent.indexOf("{");
+              const end = rawContent.lastIndexOf("}");
+              resolve(JSON.parse(rawContent.substring(start, end + 1)));
+            } else {
+              reject({ code: 0, msg: "no candidates: " + b.substring(0, 80) });
+            }
+          } catch (e) {
+            reject({ code: 0, msg: e.message });
           }
-        } catch (e) {
-          console.error("🔴 שגיאת פיענוח:", e.message, b);
-          resolve({ type: "chat", text: "תקלה בפיענוח הנתונים." });
-        }
+        });
       });
+      req.on("error", (e) => reject({ code: 0, msg: e.message }));
+      req.write(postData);
+      req.end();
     });
-    req.on("error", (err) => resolve({ type: "chat", text: "שגיאת רשת." }));
-    req.write(postData);
-    req.end();
+  }
+
+  return new Promise(async (resolve) => {
+    for (const model of MODELS) {
+      try {
+        const result = await tryModel(model);
+        return resolve(result);
+      } catch (e) {
+        console.error(`⚠️ [${model}] נכשל (${e.code}): ${e.msg}`);
+        if (e.code === 503 || e.code === 429) await new Promise(r => setTimeout(r, 1500));
+      }
+    }
+    resolve({ type: "chat", text: "לא התקבלה תשובה מה-AI." });
   });
 }
 
