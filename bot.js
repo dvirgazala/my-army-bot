@@ -23,6 +23,9 @@ const RLM = "\u200f";
 
 const GROUP_CHAT_ID = "-1003748361029";
 
+// זיכרון זמני לאישורים ממתינים (שם מעורפל)
+const pendingConfirmations = new Map();
+
 // רישום Webhook וסרת health check
 bot.setWebHook(WEBHOOK_URL).then(() => {
   console.log(`🚀 גרסה 62 באוויר - Webhook Mode | מבצע: ${DEPLOYMENT_NAME}`);
@@ -65,6 +68,31 @@ bot.on("message", async (msg) => {
   const COMMANDER_ID = 434078287;
   const isPrivate = chatId > 0;
   if (isPrivate && chatId !== COMMANDER_ID) return;
+
+  // --- טיפול באישור ממתין (שם מעורפל) ---
+  if (pendingConfirmations.has(chatId)) {
+    const pending = pendingConfirmations.get(chatId);
+    const cleanAnswer = text.replace(/^[*]+/, '').trim();
+    const choiceNum = parseInt(cleanAnswer) - 1;
+    if (!isNaN(choiceNum) && choiceNum >= 0 && choiceNum < pending.matches.length) {
+      pendingConfirmations.delete(chatId);
+      const sInfo = pending.matches[choiceNum];
+      try {
+        for (const date of pending.dates) {
+          await supabase.from("report_data").upsert({
+            name: sInfo.name, status: pending.status, mission: pending.mission,
+            report_date: date, deployment_name: DEPLOYMENT_NAME
+          }, { onConflict: 'name, report_date' });
+        }
+        return bot.sendMessage(chatId, `✅ ${sInfo.name} עודכן ל${pending.status === 'HOME' ? 'בבית' : 'בבסיס'}.`);
+      } catch (e) {
+        console.error("🔴 שגיאה באישור ממתין:", e);
+        return bot.sendMessage(chatId, "הייתה שגיאה בעיבוד האישור.");
+      }
+    } else {
+      pendingConfirmations.delete(chatId); // בטל ועבד כהודעה רגילה
+    }
+  }
 
   // --- שומר הסף ---
   const isGroup = chatId < 0;
@@ -126,6 +154,18 @@ bot.on("message", async (msg) => {
       let count = 0;
       let unknownNames = [];
       const dates = (ai.dates && ai.dates.length > 0) ? ai.dates : [todayDate];
+
+      // בדיקת שמות מעורפלים לפני העדכון
+      for (let u of ai.updates) {
+        const matches = (roster || []).filter(s => s.name === u.name || s.name.includes(u.name) || u.name.includes(s.name));
+        if (matches.length > 1) {
+          const options = matches.map((s, i) => `${i + 1}. ${s.name}`).join("\n");
+          pendingConfirmations.set(chatId, {
+            matches, status: u.status || "BASE", mission: u.mission || "ללא משימה", dates
+          });
+          return bot.sendMessage(chatId, `❓ *איזה מהם?*\n${options}`, { parse_mode: "Markdown" });
+        }
+      }
 
       for (const date of dates) {
         for (let u of ai.updates) {
