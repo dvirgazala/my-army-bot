@@ -2,7 +2,6 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 const https = require("https");
-const http = require("http");
 const cron = require("node-cron");
 
 // משתני סביבה
@@ -13,20 +12,22 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const DEPLOYMENT_NAME = process.env.DEPLOYMENT_NAME || "שאגת הארי";
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: true });
+const PORT = process.env.PORT || 3000;
+const WEBHOOK_URL = `https://dvir-army-bot.onrender.com/bot${TELEGRAM_TOKEN}`;
+
+// Webhook mode - אין polling, אין התנגשות בין instances
+const bot = new TelegramBot(TELEGRAM_TOKEN, { webHook: { port: PORT } });
 
 const VALID_UNITS = ['מפל"ג', "מחלקה 1", "מחלקה 2", "מחלקה 3", "חובשים"];
 const RLM = "\u200f";
 
-// שרת דמה לפורט של Render
-http.createServer((req, res) => {
-  res.write(`Bot V61.1 Active - Deployment: ${DEPLOYMENT_NAME}`);
-  res.end();
-}).listen(process.env.PORT || 3000);
-
 const GROUP_CHAT_ID = "-1003748361029";
 
-console.log(`🚀 גרסה 61.2 באוויר - Gemini Flash | מבצע: ${DEPLOYMENT_NAME}`);
+// רישום Webhook וסרת health check
+bot.setWebHook(WEBHOOK_URL).then(() => {
+  console.log(`🚀 גרסה 62 באוויר - Webhook Mode | מבצע: ${DEPLOYMENT_NAME}`);
+  console.log(`🔗 Webhook: ${WEBHOOK_URL}`);
+}).catch(e => console.error("❌ Webhook setup failed:", e.message));
 
 // ==========================================
 // תזמון הודעות (Cron) - 18:00 שעון ישראל
