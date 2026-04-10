@@ -94,7 +94,7 @@ bot.on("message", async (msg) => {
     if (ai.type === "clear") {
       const targetDate = ai.targetDate || todayDate;
       await supabase.from("report_data").delete().eq("report_date", targetDate);
-      return bot.sendMessage(chatId, `🧹 **דוח 1 לתאריך ${targetDate} [${DEPLOYMENT_NAME}] אופס בהצלחה!**`);
+      return bot.sendMessage(chatId, `🧹 **דוח 1 לתאריך ${targetDate} [${DEPLOYMENT_NAME}] אופס בהצלחה!**`, { parse_mode: "Markdown" });
     }
 
     // 1. עדכון גורף (Bulk)
@@ -136,7 +136,8 @@ bot.on("message", async (msg) => {
       }
       let resTxt = count > 0 ? `✅ העדכון נקלט ביומן [${DEPLOYMENT_NAME}] (${count} חיילים).` : "";
       if (unknownNames.length > 0) resTxt += `\n⚠️ שמות לא במצבת: ${unknownNames.join(", ")}`;
-      return bot.sendMessage(chatId, resTxt);
+      if (resTxt) return bot.sendMessage(chatId, resTxt);
+      return;
     }
 
     // 3. הצגת דוח
@@ -167,7 +168,7 @@ bot.on("message", async (msg) => {
     }
 
     if (ai.type === "chat" && !text.includes("דוח")) {
-      bot.sendMessage(chatId, ai.text);
+      bot.sendMessage(chatId, ai.text || "הפקודה לא הובנה, נסה שוב.");
     }
 
   } catch (e) {
@@ -185,8 +186,8 @@ async function askAi(input, data, senderName) {
   const prompt = `אתה סמב"ץ פלוגתי במבצע ${DEPLOYMENT_NAME}. היום יום ${new Date().toLocaleDateString('he-IL', {weekday: 'long'})}, התאריך: ${todayStr}.
 המשתמש שכותב לך: ${senderName}.
 מאגר השמות המורשה (soldiers): ${JSON.stringify([...new Set(data.map(s => s.name))])}.
-משימות רשמיות: ["חפ"ק מ"פ","חפ"ק סמ"פ","חפ"ק מ"מ 1","חפ"ק מ"מ 2","חפ"ק מ"מ 3","נהג משאית","מלווה נהג משאית"].
-מחלקות: ["מפל"ג","מחלקה 1","מחלקה 2","מחלקה 3","חובשים"].
+משימות רשמיות: [חפ״ק מ״פ, חפ״ק סמ״פ, חפ״ק מ״מ 1, חפ״ק מ״מ 2, חפ״ק מ״מ 3, נהג משאית, מלווה נהג משאית].
+מחלקות: [מפל״ג, מחלקה 1, מחלקה 2, מחלקה 3, חובשים].
 הודעה מהמשתמש: "${input}".
 
 חוקים קריטיים לזיהוי הפעולה (type):
