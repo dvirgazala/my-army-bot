@@ -7,7 +7,7 @@ const cron = require("node-cron");
 
 // משתני סביבה
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
-const OPENQUARRY_KEY = process.env.OPENQUARRY_KEY;
+const GEMINI_KEY = process.env.GEMINI_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const DEPLOYMENT_NAME = process.env.DEPLOYMENT_NAME || "שאגת הארי";
@@ -26,7 +26,7 @@ http.createServer((req, res) => {
 
 const GROUP_CHAT_ID = "-1003748361029";
 
-console.log(`🚀 גרסה 61.1 באוויר - OpenRouter (Minimax) | מבצע: ${DEPLOYMENT_NAME}`);
+console.log(`🚀 גרסה 61.2 באוויר - Gemini Flash | מבצע: ${DEPLOYMENT_NAME}`);
 
 // ==========================================
 // תזמון הודעות (Cron) - 18:00 שעון ישראל
@@ -207,25 +207,15 @@ async function askAi(input, data, senderName) {
 {"type":"update/show_report/rename/add/clear/bulk_update/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"all/שם מחלקה", "status":"BASE/HOME", "updates":[{"name":"שם מלא מהמאגר","status":"BASE/HOME","mission":"שם משימה רשמי או ללא משימה"}], "oldName":"...", "newName":"...", "name":"...", "text":"תשובה קצרה"}`;
 
   const postData = JSON.stringify({
-    model: "minimax/minimax-m2.5:free",
-    messages: [
-      { role: "system", content: "You are a professional military assistant. Always respond with valid JSON." },
-      { role: "user", content: prompt }
-    ],
-    max_tokens: 1000,
-    response_format: { type: "json_object" }
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: { responseMimeType: "application/json" }
   });
 
   const options = {
-    hostname: "openrouter.ai",
-    path: "/api/v1/chat/completions",
+    hostname: "generativelanguage.googleapis.com",
+    path: `/v1beta/models/gemini-flash-latest:generateContent?key=${GEMINI_KEY}`,
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${OPENQUARRY_KEY}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://render.com",
-      "X-Title": "Military-Bot-V61"
-    }
+    headers: { "Content-Type": "application/json" }
   };
 
   return new Promise((resolve) => {
@@ -235,14 +225,14 @@ async function askAi(input, data, senderName) {
       res.on("end", () => {
         try {
           const response = JSON.parse(b);
-          if (response.choices && response.choices[0]) {
-            const rawContent = response.choices[0].message.content;
+          if (response.candidates && response.candidates[0]) {
+            const rawContent = response.candidates[0].content.parts[0].text;
             console.log("📝 תשובה גולמית מה-AI:", rawContent);
             const start = rawContent.indexOf("{");
             const end = rawContent.lastIndexOf("}");
             resolve(JSON.parse(rawContent.substring(start, end + 1)));
           } else {
-            console.error("⚠️ תשובת OpenRouter ריקה:", b);
+            console.error("⚠️ תשובת Gemini ריקה:", b);
             resolve({ type: "chat", text: "לא התקבלה תשובה מה-AI." });
           }
         } catch (e) {
