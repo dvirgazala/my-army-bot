@@ -69,29 +69,9 @@ bot.on("message", async (msg) => {
   const isPrivate = chatId > 0;
   if (isPrivate && chatId !== COMMANDER_ID) return;
 
-  // --- טיפול באישור ממתין (שם מעורפל) ---
+  // --- טיפול באישור ממתין (fallback טקסט, לא בשימוש רגיל) ---
   if (pendingConfirmations.has(chatId)) {
-    const pending = pendingConfirmations.get(chatId);
-    const cleanAnswer = text.replace(/^[*]+/, '').trim();
-    const choiceNum = parseInt(cleanAnswer) - 1;
-    if (!isNaN(choiceNum) && choiceNum >= 0 && choiceNum < pending.matches.length) {
-      pendingConfirmations.delete(chatId);
-      const sInfo = pending.matches[choiceNum];
-      try {
-        for (const date of pending.dates) {
-          await supabase.from("report_data").upsert({
-            name: sInfo.name, status: pending.status, mission: pending.mission,
-            report_date: date, deployment_name: DEPLOYMENT_NAME
-          }, { onConflict: 'name, report_date' });
-        }
-        return bot.sendMessage(chatId, `✅ ${sInfo.name} עודכן ל${pending.status === 'HOME' ? 'בבית' : 'בבסיס'}.`);
-      } catch (e) {
-        console.error("🔴 שגיאה באישור ממתין:", e);
-        return bot.sendMessage(chatId, "הייתה שגיאה בעיבוד האישור.");
-      }
-    } else {
-      pendingConfirmations.delete(chatId); // בטל ועבד כהודעה רגילה
-    }
+    pendingConfirmations.delete(chatId); // ביטול - המשך לעיבוד רגיל
   }
 
   // --- שומר הסף ---
@@ -159,11 +139,14 @@ bot.on("message", async (msg) => {
       for (let u of ai.updates) {
         const matches = (roster || []).filter(s => s.name === u.name || s.name.includes(u.name) || u.name.includes(s.name));
         if (matches.length > 1) {
-          const options = matches.map((s, i) => `${i + 1}. ${s.name}`).join("\n");
           pendingConfirmations.set(chatId, {
             matches, status: u.status || "BASE", mission: u.mission || "ללא משימה", dates
           });
-          return bot.sendMessage(chatId, `❓ *איזה מהם?*\n${options}`, { parse_mode: "Markdown" });
+          const keyboard = matches.map((s, i) => [{ text: s.name, callback_data: `amb_${chatId}_${i}` }]);
+          return bot.sendMessage(chatId, `❓ *איזה מהם?*`, {
+            parse_mode: "Markdown",
+            reply_markup: { inline_keyboard: keyboard }
+          });
         }
       }
 
@@ -220,6 +203,48 @@ bot.on("message", async (msg) => {
   } catch (e) {
     console.error("🔴 שגיאה:", e);
     bot.sendMessage(chatId, "הייתה שגיאה בעיבוד הפקודה.");
+  }
+});
+
+// ==========================================
+// טיפול בלחיצה על כפתור (Inline Keyboard)
+// ==========================================
+bot.on("callback_query", async (query) => {
+  const chatId = query.message.chat.id;
+  const data = query.data;
+
+  if (!data.startsWith("amb_")) return bot.answerCallbackQuery(query.id);
+
+  const parts = data.split("_");
+  const idx = parseInt(parts[parts.length - 1]);
+
+  if (!pendingConfirmations.has(chatId)) {
+    return bot.answerCallbackQuery(query.id, { text: "הפעולה פגה תוקף, שלח שוב." });
+  }
+
+  const pending = pendingConfirmations.get(chatId);
+  if (isNaN(idx) || idx < 0 || idx >= pending.matches.length) {
+    return bot.answerCallbackQuery(query.id, { text: "בחירה לא תקינה." });
+  }
+
+  pendingConfirmations.delete(chatId);
+  const sInfo = pending.matches[idx];
+
+  try {
+    for (const date of pending.dates) {
+      await supabase.from("report_data").upsert({
+        name: sInfo.name, status: pending.status, mission: pending.mission,
+        report_date: date, deployment_name: DEPLOYMENT_NAME
+      }, { onConflict: 'name, report_date' });
+    }
+    const statusHe = pending.status === 'HOME' ? 'בבית' : 'בבסיס';
+    await bot.editMessageText(`✅ *${sInfo.name}* עודכן ל${statusHe}.`, {
+      chat_id: chatId, message_id: query.message.message_id, parse_mode: "Markdown"
+    });
+    bot.answerCallbackQuery(query.id);
+  } catch (e) {
+    console.error("🔴 שגיאה ב-callback:", e);
+    bot.answerCallbackQuery(query.id, { text: "הייתה שגיאה." });
   }
 });
 
