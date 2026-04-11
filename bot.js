@@ -248,9 +248,10 @@ async function askAi(input, data, senderName) {
 - תאריכים: זהה "מחר", "יום ראשון", "07/04" והפוך ל-YYYY-MM-DD.
 - סטטוס: "בבית" = HOME, "בבסיס" = BASE. אם לא צוין → BASE.
 - משימות: אם צוינה משימה רשמית, השתמש בשם המדויק מהרשימה.
+- שמות: אם השם שנכתב תואם בדיוק לשם מלא במאגר - החזר אותו כמות שהוא. אם הוא חלקי (שם משפחה בלבד, שם פרטי בלבד) - החזר אותו בדיוק כפי שנכתב על ידי המשתמש, אל תשלים לשם מלא.
 
 החזר JSON בלבד, ללא הקדמות:
-{"type":"update/show_report/rename/add/clear/bulk_update/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"all/שם מחלקה", "status":"BASE/HOME", "updates":[{"name":"שם מלא מהמאגר","status":"BASE/HOME","mission":"שם משימה רשמי או ללא משימה"}], "oldName":"...", "newName":"...", "name":"...", "text":"תשובה קצרה"}`;
+{"type":"update/show_report/rename/add/clear/bulk_update/chat", "targetDate":"YYYY-MM-DD", "dates":["YYYY-MM-DD"], "unit":"all/שם מחלקה", "status":"BASE/HOME", "updates":[{"name":"השם כפי שנכתב","status":"BASE/HOME","mission":"שם משימה רשמי או ללא משימה"}], "oldName":"...", "newName":"...", "name":"...", "text":"תשובה קצרה"}`;
 
   const postData = JSON.stringify({
     contents: [{ parts: [{ text: prompt }] }],
