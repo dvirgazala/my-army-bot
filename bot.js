@@ -131,39 +131,43 @@ bot.on("message", async (msg) => {
 
     // 2. עדכון רגיל (בודדים/רשימה)
     if (ai.type === "update" && ai.updates && ai.updates.length > 0) {
-      let count = 0;
-      let unknownNames = [];
       const dates = (ai.dates && ai.dates.length > 0) ? ai.dates : [todayDate];
+      const ready = [];          // התאמה ייחודית - מוכן לעדכון
+      const ambiguous = [];      // מספר התאמות - צריך בחירה
+      const unknownNames = [];
 
-      // בדיקת שמות מעורפלים לפני העדכון
       for (let u of ai.updates) {
         const matches = (roster || []).filter(s => s.name === u.name || s.name.includes(u.name) || u.name.includes(s.name));
         if (matches.length > 1) {
-          pendingConfirmations.set(chatId, {
-            matches, status: u.status || "BASE", mission: u.mission || "ללא משימה", dates
-          });
-          const keyboard = matches.map((s, i) => [{ text: s.name, callback_data: `amb_${chatId}_${i}` }]);
-          return bot.sendMessage(chatId, `❓ *איזה מהם?*`, {
-            parse_mode: "Markdown",
-            reply_markup: { inline_keyboard: keyboard }
-          });
+          ambiguous.push({ originalName: u.name, matches, status: u.status || "BASE", mission: u.mission || "ללא משימה" });
+        } else if (matches.length === 1) {
+          ready.push({ sInfo: matches[0], status: u.status || "BASE", mission: u.mission || "ללא משימה" });
+        } else {
+          unknownNames.push(u.name);
         }
       }
 
+      // יש שמות מעורפלים - שמור הכל ושאל על הראשון
+      if (ambiguous.length > 0) {
+        pendingConfirmations.set(chatId, { ready, ambiguous, resolved: [], dates, unknownNames });
+        const first = ambiguous[0];
+        const keyboard = first.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${chatId}_${i}` }]);
+        return bot.sendMessage(chatId, `❓ *"${first.originalName}" - איזה מהם?*`, {
+          parse_mode: "Markdown", reply_markup: { inline_keyboard: keyboard }
+        });
+      }
+
+      // אין עמימות - עדכן ישירות
+      let count = 0;
       for (const date of dates) {
-        for (let u of ai.updates) {
-          const sInfo = (roster || []).find(s => s.name === u.name || s.name.includes(u.name) || u.name.includes(s.name));
-          if (!sInfo) {
-            if (!unknownNames.includes(u.name)) unknownNames.push(u.name);
-            continue;
-          }
+        for (const item of ready) {
           await supabase.from("report_data").upsert({
-            name: sInfo.name, status: u.status || "BASE", mission: u.mission || "ללא משימה", report_date: date, deployment_name: DEPLOYMENT_NAME
+            name: item.sInfo.name, status: item.status, mission: item.mission, report_date: date, deployment_name: DEPLOYMENT_NAME
           }, { onConflict: 'name, report_date' });
           count++;
         }
       }
-      let resTxt = count > 0 ? `✅ העדכון נקלט ביומן [${DEPLOYMENT_NAME}] (${count} חיילים).` : "";
+      let resTxt = count > 0 ? `✅ העדכון נקלט ביומן [${DEPLOYMENT_NAME}] (${ready.length} חיילים).` : "";
       if (unknownNames.length > 0) resTxt += `\n⚠️ שמות לא במצבת: ${unknownNames.join(", ")}`;
       if (resTxt) return bot.sendMessage(chatId, resTxt);
       return;
@@ -223,22 +227,44 @@ bot.on("callback_query", async (query) => {
   }
 
   const pending = pendingConfirmations.get(chatId);
-  if (isNaN(idx) || idx < 0 || idx >= pending.matches.length) {
+  const current = pending.ambiguous[0];
+
+  if (isNaN(idx) || idx < 0 || idx >= current.matches.length) {
     return bot.answerCallbackQuery(query.id, { text: "בחירה לא תקינה." });
   }
 
+  // פתור את השאלה הנוכחית
+  const sInfo = current.matches[idx];
+  pending.resolved.push({ sInfo, status: current.status, mission: current.mission });
+  pending.ambiguous.shift();
+
+  // יש עוד שאלות?
+  if (pending.ambiguous.length > 0) {
+    const next = pending.ambiguous[0];
+    const keyboard = next.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${chatId}_${i}` }]);
+    await bot.editMessageText(`✅ *${sInfo.name}* נבחר.\n\n❓ *"${next.originalName}" - איזה מהם?*`, {
+      chat_id: chatId, message_id: query.message.message_id,
+      parse_mode: "Markdown", reply_markup: { inline_keyboard: keyboard }
+    });
+    return bot.answerCallbackQuery(query.id);
+  }
+
+  // כל השאלות נפתרו - עדכן הכל
   pendingConfirmations.delete(chatId);
-  const sInfo = pending.matches[idx];
+  const allItems = [...pending.ready, ...pending.resolved];
 
   try {
     for (const date of pending.dates) {
-      await supabase.from("report_data").upsert({
-        name: sInfo.name, status: pending.status, mission: pending.mission,
-        report_date: date, deployment_name: DEPLOYMENT_NAME
-      }, { onConflict: 'name, report_date' });
+      for (const item of allItems) {
+        await supabase.from("report_data").upsert({
+          name: item.sInfo.name, status: item.status, mission: item.mission,
+          report_date: date, deployment_name: DEPLOYMENT_NAME
+        }, { onConflict: 'name, report_date' });
+      }
     }
-    const statusHe = pending.status === 'HOME' ? 'בבית' : 'בבסיס';
-    await bot.editMessageText(`✅ *${sInfo.name}* עודכן ל${statusHe}.`, {
+    let confirmText = `✅ *${allItems.length} חיילים עודכנו בהצלחה.*`;
+    if (pending.unknownNames.length > 0) confirmText += `\n⚠️ שמות לא במצבת: ${pending.unknownNames.join(", ")}`;
+    await bot.editMessageText(confirmText, {
       chat_id: chatId, message_id: query.message.message_id, parse_mode: "Markdown"
     });
     bot.answerCallbackQuery(query.id);
