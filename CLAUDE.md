@@ -4,91 +4,86 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-A Telegram bot for managing IDF company (~80 soldiers) personnel status. Written in Node.js, hosted on Render, data stored in Supabase.
+A Telegram bot for managing an IDF company (~83 soldiers) personnel status ("דוח 1").
+Written in Node.js, hosted on Render, data in Supabase. **Fully deterministic — no LLM.**
+Hebrew natural-language commands are parsed in code, so the bot works always, for free,
+with no rate limits and no external AI dependency.
 
 ## Running the bot
 
 ```bash
 npm start            # run locally (requires .env; same as `node bot.js`)
-node --check bot.js  # syntax check without running
-npm test             # run offline logic tests (test-bot.js) — no network/DB needed
+node --check bot.js  # syntax check
+npm test             # 47 offline logic tests (test-bot.js) — no network/DB/LLM
 ```
 
-No build step. Copy `.env.example` to `.env` and fill in the keys for local runs.
-
-`bot.js` exports its pure helpers and only starts the bot when run directly
-(`if (require.main === module) main()`), so `test-bot.js` can require and test
-the logic (gatekeeper, name matching, date, report formatting, prompt building,
-JSON parsing) without a token, Supabase, or Gemini key.
+Copy `.env.example` to `.env` and fill the keys. `bot.js` exports its pure helpers and
+only starts the bot via `if (require.main === module) main()`, so `test-bot.js` tests the
+parser, matcher, date logic and report builder with zero I/O.
 
 ## Environment variables (`.env`, not committed)
 
 | Variable | Purpose |
 |---|---|
 | `TELEGRAM_TOKEN` | BotFather token |
-| `GEMINI_KEY` | Google Gemini API key |
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_KEY` | Supabase service role key |
+| `SUPABASE_URL` / `SUPABASE_KEY` | Supabase project URL + service role key |
 | `DEPLOYMENT_NAME` | Operation name shown in reports (e.g. `שאגת הארי`) |
 | `PORT` | Set by Render automatically |
 
+There is **no** `GEMINI_KEY` / LLM key — the bot does not call any AI service.
+
 ## Architecture
 
-Everything lives in `bot.js` (~390 lines). There are no modules, no routes file, no separate config.
+Everything is in `bot.js`. Pure helpers at the top; `main()` holds all side effects
+(Supabase client, bot, webhook, cron, handlers).
 
 **Message flow:**
-1. Telegram sends POST to webhook → `bot.on("message")` fires
-2. **Gatekeeper** filters group messages: only passes if starts with `*`, contains `דוח`, or is a `/` command
-3. Private chat: only responds to `COMMANDER_ID = 434078287`
-4. Strips `*` prefix, sends cleaned text to Gemini AI
-5. AI returns JSON with `type` field → bot routes to the right handler
+1. Telegram webhook → `bot.on("message")`.
+2. **Gatekeeper** (`passesGatekeeper`): in groups, only messages starting with `*`,
+   a `בבית:`/`בבסיס:` block, containing `דוח`, or a `/` command pass.
+3. Private chat: only `COMMANDER_ID = 434078287`.
+4. Strip `*` (or `***` for roster commands) → `parseCommand(clean, roster, isRosterCmd)`.
 
-**AI (`askAi`):**
-- Sends prompt to Gemini with full roster + Hebrew military context
-- Returns structured JSON: `{type, updates, dates, unit, status, ...}`
-- Tries 3 models in order: `gemini-flash-lite-latest` → `gemini-flash-latest` → `gemini-2.5-flash`
-- 1.5s delay on 429/503 before trying next model
+**`parseCommand` (the deterministic engine)** returns an action:
+- `clear` — איפוס/מחיקה + דוח.
+- `bulk_update` — `כולם` / `כל מחלקה N` (+ status).
+- `update` — `{ready, ambiguous, unknown, dates}`. Names resolved against the roster;
+  partial names matching several soldiers go to `ambiguous` (inline-keyboard disambiguation).
+- `show_report` — contains `דוח` / `שלח` / `מצב` and no soldier updates.
+- `rename` / `add` — roster management (triggered by `***`).
+- `unknown` — nothing recognized; bot replies with usage examples.
 
-**Action types the AI returns:**
-- `update` — update one or more soldiers (status + mission)
-- `bulk_update` — update entire company or unit
-- `show_report` — generate and send the formatted report
-- `clear` — delete all report_data for a date
-- `rename` / `add` — roster management (triggered by `***` prefix)
-- `chat` — fallback, bot replies with `ai.text`
+Parsing pieces (all pure, all tested): `resolveDate` (היום/מחר/מחרתיים/weekday/dd.mm,
+Asia/Jerusalem), `detectStatus` (בבית→HOME, בבסיס→BASE), `detectMission` (matches the
+`MISSIONS` list, handles prefixes like "בסיור 1"), `matchSoldiers` (exact preferred, else
+partial), `tokensToNames` (merges two words only if they are an exact full name),
+`parseHeaderList` + `parseTrailing` (the two common report formats), `STOP_WORDS` + `hw()`
+(Hebrew word boundaries — JS `\b` does not work on Hebrew).
 
-**Ambiguous name resolution:**
-When a name matches multiple soldiers (e.g. "כהן" → 2 soldiers), the bot shows inline keyboard buttons instead of updating all matches. State is stored in `pendingConfirmations` Map (in-memory, keyed by `chatId`). The `callback_query` handler resolves selections one at a time. All pending updates (unambiguous + resolved) are written to Supabase only after the last confirmation.
+**Units (`VALID_UNITS`):** `מפל"ג, מחלקה 1, מחלקה 2, מחלקה 3, חובשים, חמ"ל`.
+מסופחים (attached soldiers) are folded into the platoon they sit under; חובשים are separate.
+
+**Missions (`MISSIONS`, 15):** חפ"ק מ"פ/סמ"פ, רספ, פ"פ, קצין מוצב, ש"ג 4-8, סיור 1/2,
+כרמל, חובש פלוגתי, עמדת בת חפר, תורן לוגיסטיקה, תורן רחפן, נהג תורן, חמ"ל. (Source: the
+"תקן יומי בחן" sheet. No truck-driver missions anymore.)
 
 **Supabase tables:**
-- `soldiers` — roster: `name`, `unit`, `is_active`
-- `report_data` — daily status: `name`, `status` (BASE/HOME), `mission`, `report_date`, `deployment_name`. Unique constraint on `(name, report_date)`.
+- `soldiers` — roster: `name`, `unit`, `is_active`. Seeded from the "טופס יציאות" sheet
+  (minus the "אליס" company). See `db/`.
+- `report_data` — daily status: `name`, `status` (BASE/HOME), `mission`, `report_date`,
+  `deployment_name`. Unique `(name, report_date)`. Writes are batched; `onConflict:"name,report_date"`.
 
-Writes are batched: a whole `update`/`bulk_update` is one `upsert([...])` call per
-run (not one call per soldier), with `onConflict: "name,report_date"` (no space —
-PostgREST would otherwise read a non-existent ` report_date` column).
+**Report (`generateReport`, full format, HTML):** per unit lists בבסיס + בבית with counts,
+then a missions section (only assigned missions), then a total present/roster summary. All
+messages use `parse_mode: "HTML"` with `esc()`; sends/edits are wrapped to `.catch()` errors.
+Soldiers absent from `report_data` for a date default to BASE.
 
-**Messages use `parse_mode: "HTML"`** (not legacy Markdown, which breaks on `**`).
-All dynamic text is passed through `esc()` and sent via the `send()`/`edit()`
-wrappers, which always `.catch()` Telegram errors so a parse failure can't go silent.
-
-**Dates/times are computed in `Asia/Jerusalem`** via `Intl.DateTimeFormat`
-(`getIsraelDate`, `israelNowParts`), independent of the server timezone — the
-AI prompt and reports always get the correct Israel day/date even on a UTC host.
-
-**Report generation (`generateFixedReport`):**
-Iterates `VALID_UNITS` in order, then lists missions. Soldiers not in `report_data` for that date default to BASE.
-
-**Cron jobs:**
-- 18:00 Sun–Thu: reminder to send tomorrow's report
-- 18:00 Fri: reminder to send weekend report
-- Timezone: `Asia/Jerusalem`
+**Cron:** 18:00 Sun–Thu reminder for tomorrow; 18:00 Fri weekend reminder. `Asia/Jerusalem`.
 
 ## Deployment
 
-Hosted on Render (`https://dvir-army-bot.onrender.com`). Auto-deploys from GitHub `main` branch on push.
-
-**Webhook mode** (not polling) — avoids 409 conflicts during rolling deploys. Webhook is registered via `bot.setWebHook()` on startup. If the webhook goes missing (check with `getWebhookInfo`), re-register manually:
+Render (`https://dvir-army-bot.onrender.com`), auto-deploy from GitHub `main`. Webhook mode;
+`bot.setWebHook()` runs on startup. Re-register manually if needed:
 
 ```bash
 curl -X POST "https://api.telegram.org/bot{TOKEN}/setWebhook" \
@@ -96,10 +91,10 @@ curl -X POST "https://api.telegram.org/bot{TOKEN}/setWebhook" \
   -d '{"url":"https://dvir-army-bot.onrender.com/bot{TOKEN}"}'
 ```
 
-A cron-job.org job pings the service every 10 minutes to prevent Render free tier sleep.
+A cron-job.org job pings every 10 min to keep the Render free tier awake.
 
-## Key constraints
+## Data / roster
 
-- **AI must not complete partial names**: The prompt instructs Gemini to return partial names (e.g. "כהן") as-is, not completed to a full name. This is what allows the ambiguous name detection to work.
-- **`pendingConfirmations` is in-memory**: Lost on restart. If a user clicks an old button after a deploy, they see "הפעולה פגה תוקף".
-- **Group activation key**: Messages in group chats must start with `*` to be processed. `***` prefix is for roster management commands (add/rename).
+`db/schema.sql` (safe) creates the tables. `db/seed_soldiers.sql` (PII — gitignored, local
+only) seeds the 83-soldier roster, generated from the "טופס יציאות" Google Sheet excluding
+the "אליס" company. Regenerate from the sheet if the roster changes.

@@ -1,85 +1,127 @@
-// בדיקות לוגיקה אוף-ליין - לא דורשות רשת, Supabase או Gemini.
+// בדיקות לוגיקה אוף-ליין - מנוע הפענוח הדטרמיניסטי. אין רשת/DB/LLM.
 // הרצה: node test-bot.js  (או npm test)
-const {
-  esc, getIsraelDate, passesGatekeeper, matchSoldiers,
-  parseAiText, buildPrompt, generateFixedReport, VALID_UNITS
-} = require("./bot.js");
+const B = require("./bot.js");
 
 let passed = 0, failed = 0;
 function check(name, cond) {
   if (cond) { passed++; console.log(`✅ ${name}`); }
   else { failed++; console.error(`❌ ${name}`); }
 }
-function eq(name, actual, expected) {
-  check(`${name} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`, actual === expected);
-}
+function eq(name, a, e) { check(`${name} (exp ${JSON.stringify(e)}, got ${JSON.stringify(a)})`, a === e); }
 
-console.log("🔍 בדיקות לוגיקה למערכת הסמב\"ץ\n");
+const R = [
+  { name: "שקד קריו", unit: 'מפל"ג' },
+  { name: "דביר גזלה", unit: 'מפל"ג' },
+  { name: "שקד אורלוב", unit: "מחלקה 1" },
+  { name: "עידן זרו", unit: "מחלקה 1" },
+  { name: "נועה כהן", unit: "מחלקה 1" },
+  { name: "אדיר אלבלה", unit: "מחלקה 1" },   // מסופח המשויך למחלקה
+  { name: "יהונתן יוסף", unit: "מחלקה 2" },
+  { name: "אוהד עמילני", unit: "מחלקה 3" },
+  { name: "רענן קלנר", unit: "חובשים" },
+  { name: "אלון ראובן", unit: 'חמ"ל' },
+];
+
+console.log("🔍 בדיקות מנוע הפענוח הדטרמיניסטי\n");
 
 // --- שומר הסף ---
-console.log("🧪 שומר הסף (Gatekeeper)");
-eq("הודעת חולין נחסמת", passesGatekeeper("משה בבית"), false);
-eq("כוכבית עוברת", passesGatekeeper("*משה בבית"), true);
-eq("פקודת מצבת עוברת", passesGatekeeper("***איפוס דוח"), true);
-eq("דוח מלא עובר", passesGatekeeper("בבסיס: אברהם\nבבית: יצחק"), true);
-eq("פקודת / עוברת", passesGatekeeper("/id"), true);
-eq("המילה דוח עוברת", passesGatekeeper("שלח דוח 1"), true);
+console.log("🧪 שומר הסף");
+eq("חולין נחסם", B.passesGatekeeper("משה בבית"), false);
+eq("כוכבית עוברת", B.passesGatekeeper("*משה בבית"), true);
+eq("דוח עובר", B.passesGatekeeper("שלח דוח 1"), true);
+
+// --- תאריכים ---
+console.log("\n🧪 תאריכים");
+eq("מחר", B.resolveDate("אוהד בבית מחר", "2026-10-26"), "2026-10-27");
+eq("מחרתיים", B.resolveDate("מחרתיים", "2026-10-26"), "2026-10-28");
+eq("היום (ברירת מחדל)", B.resolveDate("אוהד בבית", "2026-10-26"), "2026-10-26");
+eq("dd/mm", B.resolveDate("דוח 31/10", "2026-10-26"), "2026-10-31");
+eq("יום שישי מ-26.10(ב')", B.resolveDate("דוח ליום שישי", "2026-10-26"), "2026-10-30");
 
 // --- התאמת שמות ---
-console.log("\n🧪 התאמת שמות (matchSoldiers)");
-const roster = [
-  { name: "דני כהן", unit: "מחלקה 1" },
-  { name: "דני לוי", unit: "מחלקה 2" },
-  { name: "דני", unit: "חובשים" },
-  { name: "יוסי", unit: "מחלקה 3" }
-];
-eq("שם ריק → ללא התאמות", matchSoldiers(roster, "").length, 0);
-eq("התאמה מדויקת יחידה גוברת על חלקית", matchSoldiers(roster, "דני").length, 1);
-eq("...ומחזירה את החייל הנכון", matchSoldiers(roster, "דני")[0].name, "דני");
-eq("שם חלקי → כמה התאמות (עמימות)", matchSoldiers(roster, "כהן").length, 1);
-eq("שם משפחה משותף → עמימות", matchSoldiers([{ name: "דני כהן", unit: "א" }, { name: "רון כהן", unit: "ב" }], "כהן").length, 2);
-eq("שם לא קיים → 0", matchSoldiers(roster, "אברהם").length, 0);
-eq("שם מלא יחיד", matchSoldiers(roster, "יוסי")[0].name, "יוסי");
+console.log("\n🧪 התאמת שמות");
+eq("שם מלא מדויק", B.matchSoldiers(R, "שקד קריו").length, 1);
+eq("שם משפחה ייחודי", B.matchSoldiers(R, "עמילני")[0].name, "אוהד עמילני");
+eq("שם פרטי כפול → עמימות", B.matchSoldiers(R, "שקד").length, 2);
+eq("לא קיים", B.matchSoldiers(R, "משה").length, 0);
 
-// --- תאריך ישראל ---
-console.log("\n🧪 תאריך ישראל");
-const dateStr = getIsraelDate();
-check(`פורמט YYYY-MM-DD תקין (${dateStr})`, /^\d{4}-\d{2}-\d{2}$/.test(dateStr));
+// --- parseCommand: עדכון בודד ---
+console.log("\n🧪 עדכון בודד");
+let a = B.parseCommand("אוהד עמילני בבית", R);
+eq("type=update", a.type, "update");
+eq("ready=1", a.ready.length, 1);
+eq("status=HOME", a.ready[0].status, "HOME");
+eq("השם הנכון", a.ready[0].sInfo.name, "אוהד עמילני");
 
-// --- חילוץ JSON מתשובת AI ---
-console.log("\n🧪 חילוץ JSON (parseAiText)");
-eq("JSON נקי", parseAiText('{"type":"update"}').type, "update");
-eq("JSON עם רעש מסביב", parseAiText('הנה התשובה: {"type":"clear"} סוף').type, "clear");
-check("זורק שגיאה כשאין JSON", (() => { try { parseAiText("אין כאן כלום"); return false; } catch { return true; } })());
+// --- מיזוג שם מלא מול עמימות ---
+console.log("\n🧪 שם מלא מול עמימות");
+a = B.parseCommand("שקד קריו בבסיס", R);
+eq("שקד קריו → ready 1", a.ready.length, 1);
+eq("...BASE", a.ready[0].status, "BASE");
+a = B.parseCommand("שקד בבית", R);
+eq("שקד לבד → עמימות", a.ambiguous.length, 1);
+eq("...2 אפשרויות", a.ambiguous[0].matches.length, 2);
 
-// --- בריחת HTML ---
-console.log("\n🧪 בריחת HTML (esc)");
-eq("בריחת < > &", esc("a <b> & c"), "a &lt;b&gt; &amp; c");
-eq("null → מחרוזת ריקה", esc(null), "");
+// --- רשימה עם סטטוסים שונים (trailing) ---
+console.log("\n🧪 trailing - סטטוסים שונים");
+a = B.parseCommand("עידן זרו בבית נועה כהן בבסיס", R);
+const byName = Object.fromEntries(a.ready.map(x => [x.sInfo.name, x.status]));
+eq("עידן זרו=HOME", byName["עידן זרו"], "HOME");
+eq("נועה כהן=BASE", byName["נועה כהן"], "BASE");
 
-// --- עיצוב הדוח ---
-console.log("\n🧪 עיצוב הדוח (generateFixedReport)");
-const soldiers = [
-  { name: "דני", unit: "מחלקה 1", status: "BASE", mission: "ללא משימה" },
-  { name: "רון", unit: "מחלקה 1", status: "HOME", mission: "ללא משימה" },
-  { name: "גיא", unit: 'מפל"ג', status: "BASE", mission: 'חפ"ק מ"פ' }
-];
-const report = generateFixedReport(soldiers, "2026-10-25");
-check("כולל כותרת דוח", report.includes("דוח כ"));
-check("יום ראשון חושב נכון (25.10.2026 = ראשון)", report.includes("ראשון 25.10"));
-check("כולל תגיות HTML ולא ** של Markdown", report.includes("<b>") && !report.includes("**"));
-check("משבץ משימה לחייל הנכון", report.includes('חפ"ק מ"פ') && report.includes("גיא"));
-check("סיכום: 2 בבסיס, 1 בבית", report.includes("בבסיס: 2") && report.includes("בבית: 1"));
-check("מציג את כל המחלקות", VALID_UNITS.every(u => report.includes(u)));
+// --- פורמט כותרות (header list) ---
+console.log("\n🧪 header list");
+a = B.parseCommand("בבית:\nעידן זרו\nנועה כהן\nבבסיס:\nאוהד עמילני", R);
+const hn = Object.fromEntries(a.ready.map(x => [x.sInfo.name, x.status]));
+eq("עידן זרו=HOME", hn["עידן זרו"], "HOME");
+eq("נועה כהן=HOME", hn["נועה כהן"], "HOME");
+eq("אוהד עמילני=BASE", hn["אוהד עמילני"], "BASE");
 
-// --- בניית פרומפט ---
-console.log("\n🧪 בניית פרומפט (buildPrompt)");
-const prompt = buildPrompt("דני בבית", roster, "דביר");
-check("כולל את שמות המצבת", prompt.includes("דני כהן") && prompt.includes("יוסי"));
-check("כולל את הודעת המשתמש", prompt.includes("דני בבית"));
-check("כולל את שם השולח", prompt.includes("דביר"));
+// --- משימות ---
+console.log("\n🧪 משימות");
+a = B.parseCommand("אוהד עמילני בסיור 1", R);
+eq("mission=סיור 1", a.ready[0] && a.ready[0].mission, "סיור 1");
+eq("status=BASE עם משימה", a.ready[0] && a.ready[0].status, "BASE");
+a = B.parseCommand('דביר גזלה חפ"ק מ"פ', R);
+eq('חפ"ק מ"פ מזוהה', a.ready[0] && a.ready[0].mission, 'חפ"ק מ"פ');
 
-// --- סיכום ---
-console.log(`\n${"=".repeat(40)}`);
-console.log(`📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
+// --- עדכון גורף ---
+console.log("\n🧪 עדכון גורף");
+a = B.parseCommand("כולם בבסיס", R);
+eq("bulk all", a.type, "bulk_update");
+eq("unit=all", a.unit, "all");
+eq("status=BASE", a.status, "BASE");
+a = B.parseCommand("כל מחלקה 1 בבית", R);
+eq("bulk unit", a.unit, "מחלקה 1");
+eq("status=HOME", a.status, "HOME");
+
+// --- איפוס והצגה ---
+console.log("\n🧪 איפוס / הצגה");
+eq("תאפס דוח → clear", B.parseCommand("תאפס דוח 1", R).type, "clear");
+eq("דוח → show_report", B.parseCommand("דוח 1", R).type, "show_report");
+eq("שלח דוח מחר → show_report", B.parseCommand("שלח דוח מחר", R).type, "show_report");
+
+// --- לא מזוהה ושמות לא במצבת ---
+console.log("\n🧪 לא מזוהה");
+eq("ג'יבריש → unknown", B.parseCommand("בלהבלה משהו", R).type, "unknown");
+a = B.parseCommand("משה בבית", R);
+eq("שם לא במצבת → unknown list", a.unknown.includes("משה"), true);
+
+// --- הדוח ---
+console.log("\n🧪 דוח (generateReport)");
+const sol = R.map(s => ({ ...s, status: "BASE", mission: "ללא משימה" }));
+sol.find(s => s.name === "עידן זרו").status = "HOME";
+sol.find(s => s.name === "אוהד עמילני").mission = "סיור 1";
+const rep = B.generateReport(sol, "2026-10-26", "שאגת הארי");
+check("כותרת דוח 1", rep.includes("דוח 1"));
+check("יום שני 26.10", rep.includes("יום שני 26.10"));
+check("HTML ולא **", rep.includes("<b>") && !rep.includes("**"));
+check("עידן זרו תחת בבית", /🏠 בבית.*עידן זרו/s.test(rep));
+check("שיבוץ משימות מופיע", rep.includes("סיור 1") && rep.includes("אוהד עמילני"));
+check("סיכום נוכחים", rep.includes('סה"כ נוכחים'));
+check("כל 6 המחלקות בסדר", B.VALID_UNITS.every(u => rep.includes(u)));
+check("15 משימות מוגדרות", B.MISSIONS.length === 15);
+check('אין נהג משאית', !B.MISSIONS.some(m => m.includes("משאית")));
+
+console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);
