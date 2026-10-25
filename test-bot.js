@@ -1,120 +1,85 @@
-require("dotenv").config();
-const https = require("https");
-const { createClient } = require("@supabase/supabase-js");
+// בדיקות לוגיקה אוף-ליין - לא דורשות רשת, Supabase או Gemini.
+// הרצה: node test-bot.js  (או npm test)
+const {
+  esc, getIsraelDate, passesGatekeeper, matchSoldiers,
+  parseAiText, buildPrompt, generateFixedReport, VALID_UNITS
+} = require("./bot.js");
 
-const OPENQUARRY_KEY = process.env.OPENQUARRY_KEY;
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const VALID_UNITS = ['מפל"ג', "מחלקה 1", "מחלקה 2", "מחלקה 3", "חובשים"];
-const RLM = "\u200f";
-
-async function runTests() {
-  console.log("🔍 [V3] מתחיל בסדרת בדיקות לוגיקה עמוקה...");
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
-  const { data: roster } = await supabase.from("soldiers").select("name, unit");
-
-  // --- טסט 1: שומר הסף ---
-  console.log("\n🧪 טסט 1: שומר הסף (Gatekeeper)");
-  const gatekeeperTests = [
-    { text: "משה בבית", isGroup: true, expected: false }, // אמור להיחסם (אין כוכבית)
-    { text: "*משה בבית", isGroup: true, expected: true }, // אמור לעבור
-    { text: "***איפוס דוח", isGroup: true, expected: true }, // אמור לעבור
-    { text: "בבסיס: אברהם\nבבית: יצחק", isGroup: true, expected: true }, // דוח מלא - אמור לעבור
-    { text: "/id", isGroup: true, expected: true } // פקודה - אמור לעבור
-  ];
-
-  gatekeeperTests.forEach(t => {
-    const isAsteriskStart = t.text.startsWith("*");
-    const isFullReport = (t.text.includes("בבית:") || t.text.includes("בבסיס:")) && t.text.includes("\n");
-    const isSlashCommand = t.text.startsWith("/");
-    const passed = !t.isGroup || isAsteriskStart || isFullReport || isSlashCommand;
-    console.log(`${passed === t.expected ? "✅" : "❌"} הודעה: "${t.text.substring(0,15)}..." | צפי: ${t.expected} | תוצאה: ${passed}`);
-  });
-
-  // --- טסט 2: AI עם שמות אמיתיים ---
-  console.log("\n🧪 טסט 2: AI עם שמות מהמצבת");
-  try {
-    const testInput = "יוסי בבית, משה בבסיס";
-    const aiResponse = await mockAskAi(testInput, roster.slice(0, 10));
-    console.log("✅ תגובת ה-AI:", JSON.stringify(aiResponse));
-    if (aiResponse.updates && aiResponse.updates.length > 0) {
-        console.log(`   נמצאו ${aiResponse.updates.length} עדכונים.`);
-    } else {
-        console.warn("   ⚠️ AI לא זיהה עדכונים.");
-    }
-  } catch (e) { console.error("❌ טסט 2 נכשל:", e); }
-
-  // --- טסט 3: תאריכים (ישראל) ---
-  console.log("\n🧪 טסט 3: תאריכים (ישראל)");
-  function getIsraelDateTest() {
-    const now = new Date();
-    const israelTime = new Date(now.toLocaleString("en-US", {timeZone: "Asia/Jerusalem"}));
-    return israelTime.toISOString().split('T')[0];
-  }
-  const dateStr = getIsraelDateTest();
-  console.log(`   תאריך נוכחי בישראל: ${dateStr}`);
-  if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
-      console.log("✅ פורמט התאריך תקין.");
-  } else {
-      console.error("❌ פורמט התאריך לא תקין.");
-  }
+let passed = 0, failed = 0;
+function check(name, cond) {
+  if (cond) { passed++; console.log(`✅ ${name}`); }
+  else { failed++; console.error(`❌ ${name}`); }
+}
+function eq(name, actual, expected) {
+  check(`${name} (expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)})`, actual === expected);
 }
 
-async function mockAskAi(input, data) {
-  const prompt = `אתה סמב"ץ פלוגתי. מאגר: ${JSON.stringify(data.map(s => s.name))}.
-  הודעה: "${input}". 
-  JSON בלבד: {"type":"update", "updates":[{"name":"...", "status":"BASE/HOME", "mission":"..."}]}`;
+console.log("🔍 בדיקות לוגיקה למערכת הסמב\"ץ\n");
 
-  const postData = JSON.stringify({
-    model: "minimax/minimax-m2.5:free",
-    messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" }
-  });
+// --- שומר הסף ---
+console.log("🧪 שומר הסף (Gatekeeper)");
+eq("הודעת חולין נחסמת", passesGatekeeper("משה בבית"), false);
+eq("כוכבית עוברת", passesGatekeeper("*משה בבית"), true);
+eq("פקודת מצבת עוברת", passesGatekeeper("***איפוס דוח"), true);
+eq("דוח מלא עובר", passesGatekeeper("בבסיס: אברהם\nבבית: יצחק"), true);
+eq("פקודת / עוברת", passesGatekeeper("/id"), true);
+eq("המילה דוח עוברת", passesGatekeeper("שלח דוח 1"), true);
 
-  const options = {
-    hostname: "openrouter.ai",
-    path: "/api/v1/chat/completions",
-    method: "POST",
-    headers: { 
-        "Content-Type": "application/json", 
-        "Authorization": `Bearer ${OPENQUARRY_KEY}`,
-        "HTTP-Referer": "https://render.com",
-        "X-Title": "Test-Bot"
-    }
-  };
+// --- התאמת שמות ---
+console.log("\n🧪 התאמת שמות (matchSoldiers)");
+const roster = [
+  { name: "דני כהן", unit: "מחלקה 1" },
+  { name: "דני לוי", unit: "מחלקה 2" },
+  { name: "דני", unit: "חובשים" },
+  { name: "יוסי", unit: "מחלקה 3" }
+];
+eq("שם ריק → ללא התאמות", matchSoldiers(roster, "").length, 0);
+eq("התאמה מדויקת יחידה גוברת על חלקית", matchSoldiers(roster, "דני").length, 1);
+eq("...ומחזירה את החייל הנכון", matchSoldiers(roster, "דני")[0].name, "דני");
+eq("שם חלקי → כמה התאמות (עמימות)", matchSoldiers(roster, "כהן").length, 1);
+eq("שם משפחה משותף → עמימות", matchSoldiers([{ name: "דני כהן", unit: "א" }, { name: "רון כהן", unit: "ב" }], "כהן").length, 2);
+eq("שם לא קיים → 0", matchSoldiers(roster, "אברהם").length, 0);
+eq("שם מלא יחיד", matchSoldiers(roster, "יוסי")[0].name, "יוסי");
 
-  return new Promise((resolve, reject) => {
-    const req = https.request(options, (res) => {
-      let b = ""; res.on("data", d => b += d);
-      res.on("end", () => {
-        try {
-          const json = JSON.parse(b);
-          if (json.error) return reject(json.error.message);
-          const raw = json.choices[0].message.content;
-          resolve(JSON.parse(raw.substring(raw.indexOf("{"), raw.lastIndexOf("}") + 1)));
-        } catch (e) { reject("Parsing error: " + b); }
-      });
-    });
-    req.on("error", reject);
-    req.write(postData); req.end();
-  });
-}
+// --- תאריך ישראל ---
+console.log("\n🧪 תאריך ישראל");
+const dateStr = getIsraelDate();
+check(`פורמט YYYY-MM-DD תקין (${dateStr})`, /^\d{4}-\d{2}-\d{2}$/.test(dateStr));
 
-function generateFixedReport(soldiers, dateString) {
-  const dateObj = new Date(dateString);
-  const days = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
-  const d = String(dateObj.getDate()).padStart(2, '0'), m = String(dateObj.getMonth() + 1).padStart(2, '0');
-  let r = `**דוח כ"א ליום ${days[dateObj.getDay()]} ${d}.${m}**\n\n`;
-  VALID_UNITS.forEach((u) => {
-    const unitSolds = soldiers.filter(s => s.unit === u);
-    r += `*${u}:*\n`;
-    if (unitSolds.length === 0) { r += `${RLM}--- \n`; return; }
-    const inB = unitSolds.filter(s => s.status === "BASE"), inH = unitSolds.filter(s => s.status === "HOME");
-    if (inB.length > 0) r += `🏡 בבסיס: ${inB.map(s => s.name).join(", ")}\n`;
-    if (inH.length > 0) r += `🏠 בבית: ${inH.map(s => s.name).join(", ")}\n`;
-  });
-  return r;
-}
+// --- חילוץ JSON מתשובת AI ---
+console.log("\n🧪 חילוץ JSON (parseAiText)");
+eq("JSON נקי", parseAiText('{"type":"update"}').type, "update");
+eq("JSON עם רעש מסביב", parseAiText('הנה התשובה: {"type":"clear"} סוף').type, "clear");
+check("זורק שגיאה כשאין JSON", (() => { try { parseAiText("אין כאן כלום"); return false; } catch { return true; } })());
 
-runTests();
+// --- בריחת HTML ---
+console.log("\n🧪 בריחת HTML (esc)");
+eq("בריחת < > &", esc("a <b> & c"), "a &lt;b&gt; &amp; c");
+eq("null → מחרוזת ריקה", esc(null), "");
+
+// --- עיצוב הדוח ---
+console.log("\n🧪 עיצוב הדוח (generateFixedReport)");
+const soldiers = [
+  { name: "דני", unit: "מחלקה 1", status: "BASE", mission: "ללא משימה" },
+  { name: "רון", unit: "מחלקה 1", status: "HOME", mission: "ללא משימה" },
+  { name: "גיא", unit: 'מפל"ג', status: "BASE", mission: 'חפ"ק מ"פ' }
+];
+const report = generateFixedReport(soldiers, "2026-10-25");
+check("כולל כותרת דוח", report.includes("דוח כ"));
+check("יום ראשון חושב נכון (25.10.2026 = ראשון)", report.includes("ראשון 25.10"));
+check("כולל תגיות HTML ולא ** של Markdown", report.includes("<b>") && !report.includes("**"));
+check("משבץ משימה לחייל הנכון", report.includes('חפ"ק מ"פ') && report.includes("גיא"));
+check("סיכום: 2 בבסיס, 1 בבית", report.includes("בבסיס: 2") && report.includes("בבית: 1"));
+check("מציג את כל המחלקות", VALID_UNITS.every(u => report.includes(u)));
+
+// --- בניית פרומפט ---
+console.log("\n🧪 בניית פרומפט (buildPrompt)");
+const prompt = buildPrompt("דני בבית", roster, "דביר");
+check("כולל את שמות המצבת", prompt.includes("דני כהן") && prompt.includes("יוסי"));
+check("כולל את הודעת המשתמש", prompt.includes("דני בבית"));
+check("כולל את שם השולח", prompt.includes("דביר"));
+
+// --- סיכום ---
+console.log(`\n${"=".repeat(40)}`);
+console.log(`📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
+process.exit(failed > 0 ? 1 : 0);

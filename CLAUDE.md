@@ -9,11 +9,17 @@ A Telegram bot for managing IDF company (~80 soldiers) personnel status. Written
 ## Running the bot
 
 ```bash
-node bot.js        # run locally (requires .env)
+npm start            # run locally (requires .env; same as `node bot.js`)
 node --check bot.js  # syntax check without running
+npm test             # run offline logic tests (test-bot.js) — no network/DB needed
 ```
 
-No build step. No test suite. To test logic manually use inline `node -e "..."` scripts.
+No build step. Copy `.env.example` to `.env` and fill in the keys for local runs.
+
+`bot.js` exports its pure helpers and only starts the bot when run directly
+(`if (require.main === module) main()`), so `test-bot.js` can require and test
+the logic (gatekeeper, name matching, date, report formatting, prompt building,
+JSON parsing) without a token, Supabase, or Gemini key.
 
 ## Environment variables (`.env`, not committed)
 
@@ -57,6 +63,18 @@ When a name matches multiple soldiers (e.g. "כהן" → 2 soldiers), the bot sh
 **Supabase tables:**
 - `soldiers` — roster: `name`, `unit`, `is_active`
 - `report_data` — daily status: `name`, `status` (BASE/HOME), `mission`, `report_date`, `deployment_name`. Unique constraint on `(name, report_date)`.
+
+Writes are batched: a whole `update`/`bulk_update` is one `upsert([...])` call per
+run (not one call per soldier), with `onConflict: "name,report_date"` (no space —
+PostgREST would otherwise read a non-existent ` report_date` column).
+
+**Messages use `parse_mode: "HTML"`** (not legacy Markdown, which breaks on `**`).
+All dynamic text is passed through `esc()` and sent via the `send()`/`edit()`
+wrappers, which always `.catch()` Telegram errors so a parse failure can't go silent.
+
+**Dates/times are computed in `Asia/Jerusalem`** via `Intl.DateTimeFormat`
+(`getIsraelDate`, `israelNowParts`), independent of the server timezone — the
+AI prompt and reports always get the correct Israel day/date even on a UTC host.
 
 **Report generation (`generateFixedReport`):**
 Iterates `VALID_UNITS` in order, then lists missions. Soldiers not in `report_data` for that date default to BASE.
