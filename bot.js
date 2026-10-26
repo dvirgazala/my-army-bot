@@ -531,7 +531,8 @@ function main() {
 
     if (text.startsWith("/id")) return send(chatId, `ID: <code>${chatId}</code>`);
     if (chatId > 0 && chatId !== COMMANDER_ID) return;
-    if (pendingConfirmations.has(chatId)) pendingConfirmations.delete(chatId);
+    const pkey = `${chatId}:${msg.from.id}`; // אישור ממתין לפי משתמש (ריבוי אנשים בקבוצה)
+    if (pendingConfirmations.has(pkey)) pendingConfirmations.delete(pkey);
     if (chatId < 0 && !passesGatekeeper(text)) return;
 
     // ניקוי כוכביות
@@ -576,9 +577,9 @@ function main() {
       if (ai.type === "update") {
         const dates = ai.dates && ai.dates.length ? ai.dates : [todayDate];
         if (ai.ambiguous.length) {
-          pendingConfirmations.set(chatId, { ready: ai.ready, ambiguous: ai.ambiguous, resolved: [], dates, unknownNames: ai.unknown });
+          pendingConfirmations.set(pkey, { ready: ai.ready, ambiguous: ai.ambiguous, resolved: [], dates, unknownNames: ai.unknown });
           const first = ai.ambiguous[0];
-          const kb = first.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${chatId}_${i}` }]);
+          const kb = first.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${i}` }]);
           return send(chatId, `❓ <b>"${esc(first.originalName)}" - איזה מהם?</b>`, { reply_markup: { inline_keyboard: kb } });
         }
         const rows = [];
@@ -631,11 +632,12 @@ function main() {
 
   bot.on("callback_query", async (query) => {
     const chatId = query.message.chat.id;
+    const pkey = `${chatId}:${query.from.id}`;
     const data = query.data;
     if (!data.startsWith("amb_")) return bot.answerCallbackQuery(query.id);
     const idx = parseInt(data.split("_").pop());
-    if (!pendingConfirmations.has(chatId)) return bot.answerCallbackQuery(query.id, { text: "הפעולה פגה תוקף, שלח שוב." });
-    const pending = pendingConfirmations.get(chatId);
+    if (!pendingConfirmations.has(pkey)) return bot.answerCallbackQuery(query.id, { text: "הפעולה פגה תוקף, שלח שוב." });
+    const pending = pendingConfirmations.get(pkey);
     const current = pending.ambiguous[0];
     if (isNaN(idx) || idx < 0 || idx >= current.matches.length) return bot.answerCallbackQuery(query.id, { text: "בחירה לא תקינה." });
 
@@ -645,13 +647,13 @@ function main() {
 
     if (pending.ambiguous.length) {
       const next = pending.ambiguous[0];
-      const kb = next.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${chatId}_${i}` }]);
+      const kb = next.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${i}` }]);
       await edit(`✅ <b>${esc(chosen)}</b> נבחר.\n\n❓ <b>"${esc(next.originalName)}" - איזה מהם?</b>`,
         { chat_id: chatId, message_id: query.message.message_id, reply_markup: { inline_keyboard: kb } });
       return bot.answerCallbackQuery(query.id);
     }
 
-    pendingConfirmations.delete(chatId);
+    pendingConfirmations.delete(pkey);
     const all = [...pending.ready, ...pending.resolved];
     try {
       const rows = [];
