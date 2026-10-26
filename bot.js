@@ -22,16 +22,17 @@ const MISSIONS = [
 ];
 
 // מילות סטטוס
-const HOME_WORDS = ["בבית", "הביתה", "בביתה", "הבייתה", "בייתה", "בית", "גימלים", "גימלמים", "חופש", "שוחרר", "שוחררה", "יצא", "יצאה", "יוצא", "יוצאת"];
-const BASE_WORDS = ["בבסיס", "בסיס", "בקו", "נוכח", "נוכחת", "חזר", "חזרה", "נכנס", "נכנסה", "עלה", "עלתה", "הגיע", "הגיעה"];
+const HOME_WORDS = ["בבית", "הביתה", "בביתה", "הבייתה", "בייתה", "בית", "גימלים", "גימלמים", "גימל", "גימלת", "חופש", "חופשי", "חופשה", "שוחרר", "שוחררה", "יצא", "יצאה", "יוצא", "יוצאת"];
+const BASE_WORDS = ["בבסיס", "בסיס", "בקו", "קו", "נוכח", "נוכחת", "נמצא", "פה", "פלוגה", "חזר", "חזרה", "נכנס", "נכנסה", "עלה", "עלתה", "הגיע", "הגיעה"];
 const CLEAR_WORDS = ["אפס", "תאפס", "לאפס", "נקה", "תנקה", "אפסי", "מחק", "תמחק", "איפוס", "רענן"];
 
 const DOW = { "ראשון": 0, "שני": 1, "שלישי": 2, "רביעי": 3, "חמישי": 4, "שישי": 5, "שבת": 6 };
 const DAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
 
-// מילים מבניות/פקודה - לא שמות של חיילים
-const STOP_WORDS = new Set(["דוח", 'דו"ח', "שלח", "הצג", "מצב", "סטטוס", "את", "של", "גם", "הוא", "היא",
-  "כל", "כולם", "כולן", "הפלוגה", "פלוגה", "לכל", "מחלקה", "יום", "היום", "מחר", "מחרתיים", "אתמול", "ה", "ו", "ל", "ב"]);
+// מילים מבניות/פקודה/מילוי - לא שמות של חיילים
+const STOP_WORDS = new Set(["דוח", 'דו"ח', "שלח", "הצג", "מצב", "המצב", "סטטוס", "את", "של", "גם", "הוא", "היא",
+  "כל", "כולם", "כולן", "הפלוגה", "פלוגה", "לכל", "מחלקה", "יום", "היום", "מחר", "מחרתיים", "אתמול", "ה", "ו", "ל", "ב",
+  "נשאר", "נשארת", "נשארה", "מגיע", "מגיעה", "בא", "באה", "יודע", "מתי", "מסדר", "טוב", "בוקר", "ערב", "לא", "יהיה", "תהיה", "היה", "לבסיס", "לקו"]);
 
 // גבול מילה עברי (JS \b לא עובד על עברית)
 function hw(text, word) {
@@ -104,9 +105,20 @@ function stripDates(text) {
 
 function statusOfWord(w) {
   const n = stripPunct(w);
-  if (HOME_WORDS.includes(n)) return "HOME";
-  if (BASE_WORDS.includes(n)) return "BASE";
-  return null;
+  const check = x => HOME_WORDS.includes(x) ? "HOME" : BASE_WORDS.includes(x) ? "BASE" : null;
+  // ישיר, או לאחר הסרת תחילית ב/ל (בחופש→חופש, לבסיס→בסיס, לקו→קו)
+  return check(n) || (n.length > 2 && (n[0] === "ב" || n[0] === "ל") ? check(n.slice(1)) : null);
+}
+
+// נרמול ביטויים נפוצים לצורה קנונית (עוזר ל"חוכמה")
+function normalizePhrases(t) {
+  return t
+    .replace(/לא\s+(מגיע|מגיעה|בא|באה|יגיע|תגיע|יהיה|תהיה|נמצא|נמצאת)/g, " בבית ")
+    .replace(/יצא(ה|ת)?\s+(הביתה|לבית|לחופש|לגימלים)/g, " בבית ")
+    .replace(/נשאר(ת|ה)?\s+(ב)?בית/g, " בבית ")
+    .replace(/חזר(ה|תי)?\s+ל?(בסיס|קו)/g, " בבסיס ")
+    .replace(/על(ה|תה|יתי)\s+לקו/g, " בבסיס ")
+    .replace(/\s+/g, " ").trim();
 }
 function detectStatus(text) {
   for (const w of text.split(/\s+/)) { const s = statusOfWord(w); if (s) return s; }
@@ -124,16 +136,23 @@ function detectMission(text) {
       return { mission: mis, cleaned };
     }
   }
+  // כינוי נפוץ: ש"ג / שג → ש"ג 4-8
+  if (/ש"?ג/.test(text)) return { mission: 'ש"ג 4-8', cleaned: text.replace(/בש"?ג|לש"?ג|ש"?ג/g, " ") };
   return { mission: null, cleaned: text };
 }
 
 // התאמת שם למצבת: מעדיף התאמה מדויקת יחידה, אחרת כל ההתאמות החלקיות
 function matchSoldiers(roster, name) {
+  const doMatch = n => {
+    const exact = (roster || []).filter(s => s.name === n);
+    if (exact.length === 1) return exact;
+    return (roster || []).filter(s => s.name === n || s.name.includes(n) || n.includes(s.name));
+  };
   const n = (name || "").trim();
   if (!n || n.length < 2) return [];
-  const exact = (roster || []).filter(s => s.name === n);
-  if (exact.length === 1) return exact;
-  return (roster || []).filter(s => s.name === n || s.name.includes(n) || n.includes(s.name));
+  let res = doMatch(n);
+  if (res.length === 0 && n.length > 2 && n[0] === "ו") res = doMatch(n.slice(1)); // ו' החיבור: "ויוסי"→"יוסי"
+  return res;
 }
 
 // המרת רצף מילים לשמות: ממזג שתי/שלוש מילים רק אם הן שם מלא מדויק במצבת
@@ -211,26 +230,38 @@ function extractUpdates(text, roster) {
       else unknown.push(cand);
     }
   }
-  return { ready, ambiguous, unknown };
+  // ניקוי כפילויות: אותו חייל פעמיים ("ונועה כהן"→נועה+כהן), ועמימות/לא-מזוהה שכבר כוסו
+  const seen = new Set();
+  const dready = ready.filter(r => seen.has(r.sInfo.name) ? false : (seen.add(r.sInfo.name), true));
+  const amb = ambiguous.filter(a => !dready.some(r => r.sInfo.name.includes(a.originalName)));
+  const unk = [...new Set(unknown)].filter(u => !dready.some(r => r.sInfo.name.includes(u)) && !amb.some(a => a.originalName === u));
+  return { ready: dready, ambiguous: amb, unknown: unk };
 }
 
 function detectBulk(text) {
+  const status = detectStatus(text);
+  if (!status) return null; // עדכון גורף דורש סטטוס מפורש (מונע "בוקר טוב לכולם")
   const all = /כולם|כולן|כל הפלוגה|כל האנשים|הפלוגה כולה/.test(text);
   let unit = null;
   for (const u of VALID_UNITS) if (text.includes(u)) unit = u;
-  const status = detectStatus(text) || "BASE";
   if (all && !unit) return { type: "bulk_update", unit: "all", status };
-  if (hw(text, "כל") && unit) return { type: "bulk_update", unit, status };
-  if (all && unit) return { type: "bulk_update", unit, status };
+  if ((hw(text, "כל") || all) && unit) return { type: "bulk_update", unit, status };
   return null;
 }
 
 // זיהוי פעולות ניהול מצבת (הוספה / הסרה / שינוי שם)
-function detectRosterOp(text) {
+function detectRosterOp(text, roster) {
   const t = text;
-  // שינוי שם: "שנה <ישן> ל<חדש>"
+  // שינוי שם: "שנה <ישן> ל<חדש>". מזהים את השם הישן מול המצבת כדי לא להישבר על ל' בשם.
   if (hw(t, "שנה") || hw(t, "תשנה") || t.includes("שינוי שם")) {
-    const m = t.match(/(?:שנה|תשנה|שינוי שם)\s+(?:את\s+)?(.+?)\s+ל[\s\-־]*(.+)/);
+    const after = t.replace(/^.*?(שנה|תשנה|שינוי שם)\s+/, "").replace(/^את\s+/, "");
+    let best = null;
+    for (const s of (roster || [])) if (after.includes(s.name) && (!best || s.name.length > best.length)) best = s.name;
+    if (best) {
+      const newName = after.slice(after.indexOf(best) + best.length).replace(/^\s*ל[\s\-־]*/, "").trim();
+      if (newName) return { type: "rename", oldName: best, newName };
+    }
+    const m = after.match(/^(.*)\sל[\s\-־]*(.+)$/);
     if (m) return { type: "rename", oldName: m[1].trim(), newName: m[2].trim() };
   }
   // הסרה (רכה): "הסר/הורד <שם>"
@@ -252,12 +283,15 @@ function detectRosterOp(text) {
 
 // --- המנוע המרכזי: טקסט → פעולה (ללא LLM) ---
 function parseCommand(text, roster, isRosterCmd) {
-  const clean = (text || "").trim();
-  const date = resolveDate(clean, getIsraelDate());
+  const raw = (text || "").trim();
+  const date = resolveDate(raw, getIsraelDate());
 
   // ניהול מצבת (הוספה/הסרה/שינוי שם) - לפי מילות מפתח מפורשות
-  const rosterOp = detectRosterOp(clean);
+  const rosterOp = detectRosterOp(raw, roster);
   if (rosterOp) return rosterOp;
+
+  // נרמול ביטויים נפוצים (לא מגיע→בבית, חזר לבסיס→בבסיס וכו')
+  const clean = normalizePhrases(raw);
 
   // איפוס
   if (CLEAR_WORDS.some(w => clean.includes(w)) && (clean.includes("דוח") || clean.includes("דו"))) return { type: "clear", targetDate: date };
@@ -273,7 +307,7 @@ function parseCommand(text, roster, isRosterCmd) {
     return { type: "update", ...upd, dates: [date] };
 
   // הצגת דוח
-  if (/דוח|דו"ח/.test(clean) || hw(clean, "מצב") || hw(clean, "סטטוס") || hw(clean, "הצג") || hw(clean, "שלח"))
+  if (/דוח|דו"ח|מצב|סטטוס/.test(clean) || hw(clean, "הצג") || hw(clean, "שלח"))
     return { type: "show_report", targetDate: date };
 
   return { type: "unknown" };

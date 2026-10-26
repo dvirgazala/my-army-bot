@@ -141,5 +141,24 @@ check("...newName", a.newName.includes("אוהד לוי"));
 eq("עדכון רגיל לא נתפס כפעולת מצבת", B.parseCommand("אוהד עמילני בבית", R).type, "update");
 eq('"תמחק דוח" עדיין clear (לא remove)', B.parseCommand("תמחק דוח", R).type, "clear");
 
+// --- ואריאציות "חכמות" ---
+console.log("\n🧪 ואריאציות טבעיות");
+const st = t => { const a = B.parseCommand(t, R); return a.ready && a.ready[0] ? a.ready[0].status : a.type; };
+eq("בחופש → HOME", st("אוהד עמילני בחופש"), "HOME");
+eq("בגימלים → HOME", st("אוהד עמילני בגימלים"), "HOME");
+eq("לא מגיע → HOME", st("אוהד עמילני לא מגיע"), "HOME");
+eq("נשאר בבית → HOME", st("אוהד עמילני נשאר בבית"), "HOME");
+eq("פה → BASE", st("אוהד עמילני פה"), "BASE");
+eq("חזר לבסיס → BASE", st("אוהד עמילני חזר לבסיס"), "BASE");
+eq("עלה לקו → BASE", st("אוהד עמילני עלה לקו"), "BASE");
+check("ללא רעש unknown ב'נשאר בבית'", B.parseCommand("אוהד עמילני נשאר בבית", R).unknown.length === 0);
+eq("ו' החיבור: 'עידן זרו ונועה כהן בבית' שניהם HOME",
+  B.parseCommand("עידן זרו ונועה כהן בבית", R).ready.filter(x => x.status === "HOME").length, 2);
+eq("'בוקר טוב לכולם' → לא עדכון גורף", B.parseCommand("בוקר טוב לכולם", R).type, "unknown");
+eq("'מה המצב' → show_report", B.parseCommand("מה המצב", R).type, "show_report");
+let rn = B.parseCommand("שנה אוהד עמילני לאוהד לוי", R);
+eq("rename old נכון מול המצבת", rn.oldName, "אוהד עמילני");
+eq("rename new נכון (לא נשבר על ל')", rn.newName, "אוהד לוי");
+
 console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);
