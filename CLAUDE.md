@@ -5,9 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this project is
 
 A Telegram bot for managing an IDF company (~83 soldiers) personnel status ("דוח 1").
-Written in Node.js, hosted on Render, data in Supabase. **Fully deterministic — no LLM.**
-Hebrew natural-language commands are parsed in code, so the bot works always, for free,
-with no rate limits and no external AI dependency.
+Written in Node.js, hosted on Render, data in Supabase. **Deterministic-first** — Hebrew
+commands are parsed in code (names, status, missions, dates, bulk, roster ops), including
+fuzzy name matching (spelling variants, nicknames). The bot always works with no LLM.
+An **optional AI fallback** (Claude via `ANTHROPIC_API_KEY`, else Gemini via `GEMINI_KEY`)
+runs only when the deterministic engine can't parse a message — for free-form phrasing and
+hard name mapping. Destructive actions (clear/bulk) are deterministic-only, never from the AI.
 
 ## Running the bot
 

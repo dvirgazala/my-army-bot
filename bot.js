@@ -2,6 +2,7 @@ require("dotenv").config();
 const TelegramBot = require("node-telegram-bot-api");
 const { createClient } = require("@supabase/supabase-js");
 const cron = require("node-cron");
+const https = require("https");
 
 // ==========================================
 // קבועים
@@ -48,6 +49,37 @@ function esc(s) {
 }
 function stripPunct(s) {
   return String(s == null ? "" : s).replace(/["'`״׳]/g, "").replace(/[.,:;!?]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+// נרמול עברי: הסרת גרשיים/מקף + איחוד אותיות סופיות
+const FINALS = { "ם": "מ", "ן": "נ", "ך": "כ", "ף": "פ", "ץ": "צ" };
+function hebNorm(s) {
+  return String(s == null ? "" : s).replace(/['"`״׳().\-־]/g, "").replace(/[םןךףץ]/g, c => FINALS[c]).replace(/\s+/g, " ").trim();
+}
+// "שלד" השם: הסרת אותיות אם-קריאה (א/ה/ו/י) לזיהוי גרסאות כתיב (עומרי≈עמרי)
+function hebSkel(s) { return hebNorm(s).replace(/[אהוי]/g, ""); }
+
+// כינויים נפוצים → שם קנוני
+const NICKNAMES = {
+  "דימה": "דמיטרי", "דימי": "דמיטרי", "אלכס": "אלכסנדר", "סשה": "אלכסנדר",
+  "יוני": "יהונתן", "יונתן": "יהונתן", "מישה": "מיכאל", "מיקי": "מיכאל",
+  "דודו": "דוד", "קובי": "יעקב", "איציק": "יצחק", "צחי": "יצחק",
+  "מוטי": "מרדכי", "אבי": "אברהם", "בני": "בנימין", "רפי": "רפאל", "גבי": "גבריאל"
+};
+
+// מרחק עריכה ≤ 1 (הוספה/מחיקה/החלפה בודדת)
+function editLE1(a, b) {
+  if (a === b) return true;
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > 1) return false;
+  let i = 0, j = 0, edits = 0;
+  while (i < la && j < lb) {
+    if (a[i] === b[j]) { i++; j++; continue; }
+    if (++edits > 1) return false;
+    if (la > lb) i++; else if (lb > la) j++; else { i++; j++; }
+  }
+  if (i < la || j < lb) edits++;
+  return edits <= 1;
 }
 
 function israelNowParts() {
@@ -143,16 +175,34 @@ function detectMission(text) {
 
 // התאמת שם למצבת: מעדיף התאמה מדויקת יחידה, אחרת כל ההתאמות החלקיות
 function matchSoldiers(roster, name) {
+  const R = roster || [];
+  const raw = (name || "").trim();
+  if (!raw || raw.length < 2) return [];
   const doMatch = n => {
-    const exact = (roster || []).filter(s => s.name === n);
+    const exact = R.filter(s => s.name === n);
     if (exact.length === 1) return exact;
-    return (roster || []).filter(s => s.name === n || s.name.includes(n) || n.includes(s.name));
+    return R.filter(s => s.name === n || s.name.includes(n) || n.includes(s.name));
   };
-  const n = (name || "").trim();
-  if (!n || n.length < 2) return [];
-  let res = doMatch(n);
-  if (res.length === 0 && n.length > 2 && n[0] === "ו") res = doMatch(n.slice(1)); // ו' החיבור: "ויוסי"→"יוסי"
-  return res;
+  // שלב 1: מדויק/חלקי, כולל הסרת ו' החיבור וכינוי נפוץ
+  const tries = [raw];
+  if (raw[0] === "ו" && raw.length > 2) tries.push(raw.slice(1));
+  const nick = NICKNAMES[hebNorm(raw)];
+  if (nick) tries.push(nick);
+  for (const t of tries) { const r = doMatch(t); if (r.length) return r; }
+
+  // שלב 2: גרסאות כתיב (שלד השם) - עומרי≈עמרי, ז'אן≈זאן
+  const cs = hebSkel(raw);
+  if (cs.length >= 3) {
+    const fuzzy = R.filter(s => hebSkel(s.name) === cs || s.name.split(" ").some(tok => hebSkel(tok) === cs));
+    if (fuzzy.length) return fuzzy;
+  }
+  // שלב 3: מרחק עריכה ≤ 1 (שגיאת כתיב בודדת)
+  const cn = hebNorm(raw);
+  if (cn.length >= 3) {
+    const ed = R.filter(s => editLE1(cn, hebNorm(s.name)) || s.name.split(" ").some(tok => editLE1(cn, hebNorm(tok))));
+    if (ed.length) return ed;
+  }
+  return [];
 }
 
 // המרת רצף מילים לשמות: ממזג שתי/שלוש מילים רק אם הן שם מלא מדויק במצבת
@@ -313,6 +363,35 @@ function parseCommand(text, roster, isRosterCmd) {
   return { type: "unknown" };
 }
 
+// האם כדאי לנסות LLM? (הקוד לא הבין, או שמות לא זוהו)
+function needsLLM(ai) {
+  return ai.type === "unknown" ||
+    (ai.type === "update" && !ai.ready.length && !ai.ambiguous.length && ai.unknown.length > 0);
+}
+
+// המרת JSON מה-LLM לפעולה פנימית מאומתת מול המצבת
+function buildActionFromLLM(j, roster) {
+  if (!j || !j.type) return null;
+  const date = (j.targetDate && /^\d{4}-\d{2}-\d{2}$/.test(j.targetDate)) ? j.targetDate : getIsraelDate();
+  // בטיחות: פעולות הרסניות (איפוס/גורף) נשארות דטרמיניסטיות בלבד - לא מ-AI מעורפל.
+  if (j.type === "show_report") return { type: "show_report", targetDate: date };
+  if (j.type === "update") {
+    const ready = [], unknown = [];
+    for (const u of (j.updates || [])) {
+      if (!u || !u.name) continue;
+      const exact = (roster || []).find(s => s.name === u.name);
+      const sInfo = exact || ((matchSoldiers(roster, u.name) || [])[0]);
+      const status = u.status === "HOME" ? "HOME" : "BASE";
+      const mission = status === "BASE" && u.mission && MISSIONS.includes(u.mission) ? u.mission : "ללא משימה";
+      if (sInfo) ready.push({ sInfo, status, mission });
+      else unknown.push(u.name);
+    }
+    if (!ready.length && !unknown.length) return null;
+    return { type: "update", ready, ambiguous: [], unknown, dates: [date] };
+  }
+  return null;
+}
+
 function missionMatch(mission, target) {
   return stripPunct(mission || "").includes(stripPunct(target));
 }
@@ -388,8 +467,53 @@ function main() {
   const rowOf = (sInfo, status, mission, date) =>
     ({ name: sInfo.name, status, mission, report_date: date, deployment_name: DEPLOYMENT_NAME });
 
+  // --- AI fallback (אופציונלי) - רץ רק כשהמנוע הדטרמיניסטי לא הצליח ---
+  const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+  const GEMINI_KEY = process.env.GEMINI_KEY;
+  const LLM_PROVIDER = ANTHROPIC_KEY ? "Claude" : (GEMINI_KEY ? "Gemini" : null);
+
+  function httpsJson(opts, bodyObj) {
+    return new Promise((resolve, reject) => {
+      const req = https.request(opts, res => {
+        let b = ""; res.on("data", d => b += d);
+        res.on("end", () => { try { resolve(JSON.parse(b)); } catch { reject(new Error("bad json: " + b.slice(0, 120))); } });
+      });
+      req.on("error", reject);
+      req.setTimeout(12000, () => req.destroy(new Error("timeout")));
+      req.write(JSON.stringify(bodyObj)); req.end();
+    });
+  }
+  function extractJson(raw) { const a = raw.indexOf("{"), b = raw.lastIndexOf("}"); if (a < 0 || b < 0) throw new Error("no json"); return JSON.parse(raw.slice(a, b + 1)); }
+
+  async function askLLM(text, roster) {
+    try {
+      const names = [...new Set((roster || []).map(s => s.name))];
+      const prompt = `אתה מפענח פקודות לבוט מצבת כוח אדם (דוח 1). היום ${getIsraelDate()}.
+מצבת השמות (רשימה סגורה): ${JSON.stringify(names)}.
+משימות: ${JSON.stringify(MISSIONS)}. מחלקות: ${JSON.stringify(VALID_UNITS)}.
+ההודעה: "${text}".
+החזר אך ורק JSON. מפה כל שם - כולל כינוי (דימה=דמיטרי) או שגיאת כתיב (עומרי=עמרי, זאן=ז'אן) - לשם המדויק מהמצבת. אל תמציא שמות שלא ברשימה.
+"בבית"=HOME, "בבסיס"=BASE. אם זו לא פקודה רלוונטית החזר {"type":"unknown"}.
+פורמט: {"type":"update|show_report|clear|bulk_update|unknown","updates":[{"name":"שם מדויק","status":"BASE|HOME","mission":"שם משימה או ריק"}],"unit":"all|מחלקה","status":"BASE|HOME","targetDate":"YYYY-MM-DD"}`;
+      let raw;
+      if (ANTHROPIC_KEY) {
+        const r = await httpsJson({ hostname: "api.anthropic.com", path: "/v1/messages", method: "POST", headers: { "x-api-key": ANTHROPIC_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" } },
+          { model: "claude-haiku-4-5-20251001", max_tokens: 500, messages: [{ role: "user", content: prompt }] });
+        if (r.error) throw new Error(r.error.message || JSON.stringify(r.error));
+        raw = r.content[0].text;
+      } else {
+        const r = await httpsJson({ hostname: "generativelanguage.googleapis.com", path: `/v1beta/models/gemini-flash-lite-latest:generateContent?key=${GEMINI_KEY}`, method: "POST", headers: { "content-type": "application/json" } },
+          { contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json" } });
+        if (r.error) throw new Error(r.error.message || JSON.stringify(r.error));
+        raw = r.candidates[0].content.parts[0].text;
+      }
+      console.log("🤖 LLM:", raw.slice(0, 140));
+      return buildActionFromLLM(extractJson(raw), roster);
+    } catch (e) { console.error("⚠️ LLM fallback:", e.message); return null; }
+  }
+
   bot.setWebHook(WEBHOOK_URL)
-    .then(() => console.log(`🚀 גרסה 70 (דטרמיניסטי, ללא LLM) באוויר | מבצע: ${DEPLOYMENT_NAME}`))
+    .then(() => console.log(`🚀 גרסה 71 באוויר | מבצע: ${DEPLOYMENT_NAME} | AI fallback: ${LLM_PROVIDER || "כבוי"}`))
     .catch(e => console.error("❌ Webhook:", e.message));
 
   cron.schedule("0 18 * * 0,1,2,3,6", () =>
@@ -420,7 +544,12 @@ function main() {
     try {
       const { data: roster } = await supabase.from("soldiers").select("name, unit").eq("is_active", true);
       const rosterList = roster || [];
-      const ai = parseCommand(clean, rosterList, isRosterCmd);
+      let ai = parseCommand(clean, rosterList, isRosterCmd);
+      // AI fallback: רק אם המנוע הדטרמיניסטי לא פיצח
+      if (LLM_PROVIDER && needsLLM(ai)) {
+        const llm = await askLLM(clean, rosterList);
+        if (llm) { ai = llm; console.log("↪️ LLM result used"); }
+      }
       console.log("⚙️", JSON.stringify(ai).slice(0, 200));
       const todayDate = getIsraelDate();
 
@@ -540,9 +669,9 @@ function main() {
 }
 
 module.exports = {
-  esc, stripPunct, getIsraelDate, israelNowParts, resolveDate, addDays, nextWeekday,
+  esc, stripPunct, hebNorm, hebSkel, editLE1, getIsraelDate, israelNowParts, resolveDate, addDays, nextWeekday,
   detectStatus, detectMission, matchSoldiers, tokensToNames, extractUpdates, detectBulk,
-  detectRosterOp, parseCommand, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS
+  detectRosterOp, parseCommand, buildActionFromLLM, needsLLM, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS
 };
 
 if (require.main === module) main();

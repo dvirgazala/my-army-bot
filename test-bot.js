@@ -20,6 +20,10 @@ const R = [
   { name: "אוהד עמילני", unit: "מחלקה 3" },
   { name: "רענן קלנר", unit: "חובשים" },
   { name: "אלון ראובן", unit: 'חמ"ל' },
+  { name: "דמיטרי רוזט", unit: "מחלקה 1" },
+  { name: "עמרי ג'אן", unit: "מחלקה 2" },
+  { name: "אלכסנדר סטוק", unit: 'מפל"ג' },
+  { name: "אלכסנדר סטיליק", unit: "מחלקה 3" },
 ];
 
 console.log("🔍 בדיקות מנוע הפענוח הדטרמיניסטי\n");
@@ -159,6 +163,37 @@ eq("'מה המצב' → show_report", B.parseCommand("מה המצב", R).type, "
 let rn = B.parseCommand("שנה אוהד עמילני לאוהד לוי", R);
 eq("rename old נכון מול המצבת", rn.oldName, "אוהד עמילני");
 eq("rename new נכון (לא נשבר על ל')", rn.newName, "אוהד לוי");
+
+// --- התאמת שמות חכמה (גרסאות כתיב + כינויים) ---
+console.log("\n🧪 התאמת שמות חכמה");
+check("עומרי → עמרי ג'אן (ו' עודפת)", B.matchSoldiers(R, "עומרי").some(s => s.name === "עמרי ג'אן"));
+check("זאן → עמרי ג'אן (ז במקום ג)", B.matchSoldiers(R, "זאן").some(s => s.name === "עמרי ג'אן"));
+check("דימה → דמיטרי רוזט (כינוי)", B.matchSoldiers(R, "דימה").some(s => s.name === "דמיטרי רוזט"));
+check("מישה → (אין מיכאל, לא מתאים)", B.matchSoldiers(R, "מישה").length === 0 || !B.matchSoldiers(R, "מישה").some(s => s.name.includes("מיכאל")));
+eq("אלכס → 2 אלכסנדרים (עמימות)", B.matchSoldiers(R, "אלכס").length, 2);
+eq("יוני → יהונתן יוסף", (B.matchSoldiers(R, "יוני")[0] || {}).name, "יהונתן יוסף");
+let sm = B.parseCommand("עומרי זאן בבית", R);
+eq("'עומרי זאן בבית' → עמרי ג'אן", (sm.ready[0] || {}).sInfo && sm.ready[0].sInfo.name, "עמרי ג'אן");
+eq("...HOME", (sm.ready[0] || {}).status, "HOME");
+eq("...בלי רעש unknown", sm.unknown.length, 0);
+eq("'דימה בבית' → דמיטרי רוזט HOME", (B.parseCommand("דימה בבית", R).ready[0] || {}).sInfo.name, "דמיטרי רוזט");
+
+// --- עזרי נרמול ---
+console.log("\n🧪 נרמול");
+eq("hebSkel עומרי=עמרי", B.hebSkel("עומרי"), B.hebSkel("עמרי"));
+check("editLE1 החלפה בודדת", B.editLE1("זאן", "גאן"));
+check("editLE1 רחוק=false", !B.editLE1("אבג", "זחט"));
+
+// --- מעטפת LLM (buildActionFromLLM + needsLLM) ---
+console.log("\n🧪 מעטפת LLM");
+check("needsLLM על unknown", B.needsLLM({ type: "unknown" }));
+check("needsLLM=false על עדכון תקין", !B.needsLLM({ type: "update", ready: [1], ambiguous: [], unknown: [] }));
+let la = B.buildActionFromLLM({ type: "update", updates: [{ name: "דמיטרי רוזט", status: "HOME" }] }, R);
+eq("buildActionFromLLM ממפה שם מדויק", (la.ready[0] || {}).sInfo.name, "דמיטרי רוזט");
+eq("...status", la.ready[0].status, "HOME");
+eq("buildActionFromLLM show_report", B.buildActionFromLLM({ type: "show_report" }, R).type, "show_report");
+eq("LLM לא יכול להפעיל גורף (בטיחות)", B.buildActionFromLLM({ type: "bulk_update", unit: "all", status: "BASE" }, R), null);
+eq("LLM לא יכול לאפס (בטיחות)", B.buildActionFromLLM({ type: "clear" }, R), null);
 
 console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);
