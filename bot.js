@@ -6,7 +6,7 @@ const cron = require("node-cron");
 // ==========================================
 // קבועים
 // ==========================================
-const DEPLOYMENT_NAME = process.env.DEPLOYMENT_NAME || "שאגת הארי";
+const DEPLOYMENT_NAME = process.env.DEPLOYMENT_NAME || "תע״מ בחן 2026";
 const COMMANDER_ID = 434078287;
 const GROUP_CHAT_ID = "-1003748361029";
 const RLM = "‏";
@@ -225,23 +225,39 @@ function detectBulk(text) {
   return null;
 }
 
+// זיהוי פעולות ניהול מצבת (הוספה / הסרה / שינוי שם)
+function detectRosterOp(text) {
+  const t = text;
+  // שינוי שם: "שנה <ישן> ל<חדש>"
+  if (hw(t, "שנה") || hw(t, "תשנה") || t.includes("שינוי שם")) {
+    const m = t.match(/(?:שנה|תשנה|שינוי שם)\s+(?:את\s+)?(.+?)\s+ל[\s\-־]*(.+)/);
+    if (m) return { type: "rename", oldName: m[1].trim(), newName: m[2].trim() };
+  }
+  // הסרה (רכה): "הסר/הורד <שם>"
+  if (hw(t, "הסר") || hw(t, "תסיר") || hw(t, "הורד") || hw(t, "תוריד")) {
+    const name = t.replace(/הסר|תסיר|הורד|תוריד|מהמצב[התא]|מהמסדר/g, " ").replace(/\s+/g, " ").trim();
+    if (name) return { type: "remove", name };
+  }
+  // הוספה: "הוסף <שם> <מחלקה>"
+  if (hw(t, "הוסף") || hw(t, "תוסיף") || hw(t, "הוסיפי")) {
+    let unit = null;
+    for (const u of VALID_UNITS) if (t.includes(u)) unit = u;
+    let name = t.replace(/הוסף|תוסיף|הוסיפי/g, " ");
+    if (unit) name = name.replace(unit, " ");
+    name = name.replace(/למחלקה|מחלקה|לחובשים|לחמ"ל|לחמל|\d+/g, " ").replace(/\s+/g, " ").trim();
+    return { type: "add", name, unit };
+  }
+  return null;
+}
+
 // --- המנוע המרכזי: טקסט → פעולה (ללא LLM) ---
 function parseCommand(text, roster, isRosterCmd) {
   const clean = (text || "").trim();
   const date = resolveDate(clean, getIsraelDate());
 
-  // ניהול מצבת (***)
-  if (isRosterCmd) {
-    if (/\b(שנה|תשנה|שינוי)\b/.test(clean)) {
-      const m = clean.match(/(?:שנה|תשנה|שינוי)\s+(?:את\s+)?(.+?)\s+ל\s*[-־]?\s*(.+)/);
-      if (m) return { type: "rename", oldName: m[1].trim(), newName: m[2].trim() };
-    }
-    if (/\b(הוסף|תוסיף|הוסיפי)\b/.test(clean)) {
-      let unit = null; for (const u of VALID_UNITS) if (clean.includes(u)) unit = u;
-      const name = clean.replace(/\b(הוסף|תוסיף|הוסיפי|את|ל|למחלקה|מחלקה)\b/g, " ").replace(unit || "", " ").replace(/\d/g, " ").replace(/\s+/g, " ").trim();
-      if (name) return { type: "add", name, unit: unit || "מסופחים" };
-    }
-  }
+  // ניהול מצבת (הוספה/הסרה/שינוי שם) - לפי מילות מפתח מפורשות
+  const rosterOp = detectRosterOp(clean);
+  if (rosterOp) return rosterOp;
 
   // איפוס
   if (CLEAR_WORDS.some(w => clean.includes(w)) && (clean.includes("דוח") || clean.includes("דו"))) return { type: "clear", targetDate: date };
@@ -420,16 +436,30 @@ function main() {
         return send(chatId, generateReport(merged, date, DEPLOYMENT_NAME));
       }
 
-      if (ai.type === "rename") {
-        await supabase.from("soldiers").update({ name: ai.newName }).eq("name", ai.oldName);
-        return send(chatId, `✅ השם שונה ל-${esc(ai.newName)}.`);
-      }
       if (ai.type === "add") {
+        if (!ai.name) return send(chatId, "לא זוהה שם. דוגמה:\n<code>*הוסף דני כהן מחלקה 1</code>");
+        if (!ai.unit) return send(chatId, `ציין מחלקה (${VALID_UNITS.join(" / ")}). דוגמה:\n<code>*הוסף ${esc(ai.name)} מחלקה 1</code>`);
+        const exists = rosterList.find(s => s.name === ai.name);
+        if (exists) return send(chatId, `⚠️ "${esc(ai.name)}" כבר במצבת (${esc(exists.unit)}).`);
         await supabase.from("soldiers").insert([{ name: ai.name, unit: ai.unit, is_active: true }]);
-        return send(chatId, `✅ ${esc(ai.name)} נוסף למצבת (${esc(ai.unit)}).`);
+        return send(chatId, `✅ <b>${esc(ai.name)}</b> נוסף למצבת (${esc(ai.unit)}).`);
+      }
+      if (ai.type === "remove") {
+        const m = matchSoldiers(rosterList, ai.name);
+        if (m.length === 0) return send(chatId, `⚠️ "${esc(ai.name)}" לא נמצא במצבת.`);
+        if (m.length > 1) return send(chatId, `❓ יש כמה: ${esc(m.map(s => s.name).join(", "))}.\nכתוב שם מלא: <code>*הסר ${esc(m[0].name)}</code>`);
+        await supabase.from("soldiers").update({ is_active: false }).eq("name", m[0].name);
+        return send(chatId, `✅ <b>${esc(m[0].name)}</b> הוסר מהמצבת.`);
+      }
+      if (ai.type === "rename") {
+        const m = matchSoldiers(rosterList, ai.oldName);
+        if (m.length === 0) return send(chatId, `⚠️ "${esc(ai.oldName)}" לא נמצא במצבת.`);
+        if (m.length > 1) return send(chatId, `❓ יש כמה התאמות ל-"${esc(ai.oldName)}". כתוב שם מלא.`);
+        await supabase.from("soldiers").update({ name: ai.newName }).eq("name", m[0].name);
+        return send(chatId, `✅ "${esc(m[0].name)}" → "<b>${esc(ai.newName)}</b>".`);
       }
 
-      return send(chatId, "❓ לא הבנתי. דוגמאות:\n<code>*דני בבית</code>\n<code>*כולם בבסיס</code>\n<code>*דוח 1</code>\n<code>*תאפס דוח</code>");
+      return send(chatId, "❓ לא הבנתי. דוגמאות:\n<code>*דני בבית</code>\n<code>*כולם בבסיס</code>\n<code>*דני בסיור 1</code>\n<code>*דוח 1</code>\n<code>*תאפס דוח</code>\n<code>*הוסף דני כהן מחלקה 1</code>\n<code>*הסר דני כהן</code>");
     } catch (e) {
       console.error("🔴", e);
       send(chatId, "הייתה שגיאה בעיבוד הפקודה.");
@@ -478,7 +508,7 @@ function main() {
 module.exports = {
   esc, stripPunct, getIsraelDate, israelNowParts, resolveDate, addDays, nextWeekday,
   detectStatus, detectMission, matchSoldiers, tokensToNames, extractUpdates, detectBulk,
-  parseCommand, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS
+  detectRosterOp, parseCommand, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS
 };
 
 if (require.main === module) main();

@@ -123,5 +123,23 @@ check("כל 6 המחלקות בסדר", B.VALID_UNITS.every(u => rep.includes(u)
 check("15 משימות מוגדרות", B.MISSIONS.length === 15);
 check('אין נהג משאית', !B.MISSIONS.some(m => m.includes("משאית")));
 
+// --- ניהול מצבת ---
+console.log("\n🧪 ניהול מצבת (הוספה/הסרה/שינוי שם)");
+a = B.parseCommand("הוסף דני כהן מחלקה 1", R);
+eq("הוסף → type=add", a.type, "add");
+eq("...name", a.name, "דני כהן");
+eq("...unit", a.unit, "מחלקה 1");
+a = B.parseCommand("הוסף דני כהן", R);
+eq("הוספה ללא מחלקה → unit null", a.unit, null);
+a = B.parseCommand("הסר אוהד עמילני", R);
+eq("הסר → type=remove", a.type, "remove");
+check("...name כולל עמילני", a.name.includes("עמילני"));
+a = B.parseCommand("שנה אוהד עמילני לאוהד לוי", R);
+eq("שנה → type=rename", a.type, "rename");
+check("...oldName", a.oldName.includes("אוהד עמילני"));
+check("...newName", a.newName.includes("אוהד לוי"));
+eq("עדכון רגיל לא נתפס כפעולת מצבת", B.parseCommand("אוהד עמילני בבית", R).type, "update");
+eq('"תמחק דוח" עדיין clear (לא remove)', B.parseCommand("תמחק דוח", R).type, "clear");
+
 console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);
