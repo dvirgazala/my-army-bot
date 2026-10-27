@@ -7,7 +7,8 @@ const https = require("https");
 // ==========================================
 // קבועים
 // ==========================================
-const DEPLOYMENT_NAME = process.env.DEPLOYMENT_NAME || "תע״מ בחן 2026";
+// מקור-אמת יחיד לשם המבצע. מתעלם מ-env (ב-Render הוא נשאר "שאגת הארי"). לשינוי - ערוך כאן.
+const DEPLOYMENT_NAME = "תע״מ בחן 2026";
 // הערה חופשית ליד השם (נפקד/שחרור/חופש...) נשמרת בתוך עמודת mission הקיימת,
 // כי ל-Supabase אין עמודת note (אין הרשאת DDL מרחוק). קידוד: mission="הערה: <טקסט>".
 const NOTE_PREFIX = "הערה: ";
@@ -552,9 +553,10 @@ function generateReport(soldiers, dateString, deployment) {
     const base = us.filter(s => s.status === "BASE");
     const home = us.filter(s => s.status === "HOME");
     const label = s => esc(s.name) + (s.note ? ` (${esc(s.note)})` : "");
+    const list = arr => arr.length ? arr.map(s => "• " + label(s)).join("\n") : "—";   // שם בכל שורה
     r += `⬛ <b>${esc(u)}</b> (${base.length}/${us.length})\n`;
-    r += `🏡 בבסיס (${base.length}): ${base.length ? base.map(label).join(", ") : "—"}\n`;
-    if (home.length) r += `🏠 בבית (${home.length}): ${home.map(label).join(", ")}\n`;
+    r += `🏡 בבסיס (${base.length}):\n${list(base)}\n`;
+    if (home.length) r += `🏠 בבית (${home.length}):\n${list(home)}\n`;
     r += "\n";
   }
 
