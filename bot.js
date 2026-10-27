@@ -292,6 +292,94 @@ function extractUpdatesLines(text, roster) {
   return { ready, ambiguous: amb, unknown: unk };
 }
 
+// ==========================================
+// פרסר עוגן-שמות: סורק זרם טקסט ומחלץ (שם → סטטוס) לפי המצבת.
+// עובד גם כשכמה חיילים באותה שורה ("שם1- נוכח שם2- נוכח") או מופרדים באימוג'י.
+// ==========================================
+const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{2190}-\u{21FF}\u{2B55}\u{20E3}\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]/u;
+
+// האם הטוקן הוא מפריד/סטטוס (ולא חלק משם)?
+function isDelimTok(tok) {
+  const t = stripPunct(tok);
+  if (!t) return true;                                   // פיסוק/מקף בלבד
+  if (EMOJI_RE.test(tok)) return true;                   // אימוג'י
+  if (/^[\d.\/\-־]+$/.test(tok)) return true;            // מספר/תאריך
+  if (statusOfWord(tok)) return true;                    // נ/נוכח/חול/בית/גימלים/נפקד...
+  if (noteOf(tok)) return true;                          // מילת-הערה
+  if (NOTE_TOKENS.has(hebNorm(t))) return true;
+  if (STOP_WORDS.has(t)) return true;                    // דוח/מחלקה/פלוגה/את/של/יום...
+  if (/^(מחלקה|פלוגה|מסופחימ|מסופח|חובשימ|חמל|מפלג|נוכחימ|נמצאימ|צו)$/.test(hebNorm(t))) return true;
+  return false;
+}
+
+// חילוץ שמות מרצף טוקנים "נקיים" (ללא מפרידים). מעדיף התאמה מדויקת ארוכה, אחרת יחידה.
+function extractNamesFromRun(run, roster) {
+  const names = [];
+  let j = 0;
+  while (j < run.length) {
+    let took = false;
+    // מעבר 1: החלון הארוך ביותר שהוא שם מדויק במצבת
+    for (let len = Math.min(4, run.length - j); len >= 2; len--) {
+      const cand = run.slice(j, j + len).join(" ");
+      if ((roster || []).some(s => s.name === cand)) { names.push(cand); j += len; took = true; break; }
+    }
+    if (took) continue;
+    // מעבר 2: החלון הארוך ביותר עם התאמה יחידה (כולל תת-קבוצה/כתיב)
+    for (let len = Math.min(4, run.length - j); len >= 2; len--) {
+      const cand = run.slice(j, j + len).join(" ");
+      if (matchSoldiers(roster, cand).length === 1) { names.push(cand); j += len; took = true; break; }
+    }
+    if (took) continue;
+    // מעבר 3: טוקן בודד (ייפתר/יסומן כעמימות/לא-מזוהה בהמשך)
+    names.push(run[j]); j++;
+  }
+  return names;
+}
+
+function extractByScan(text, roster) {
+  const ready = [], ambiguous = [], unknown = [];
+  const seen = new Set();
+  let currentStatus = null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replace(/\*+/g, "").trim();
+    if (!line) continue;
+    const hdr = lineStatusHeader(line);
+    if (hdr) { currentStatus = hdr; continue; }
+    // ריווח סביב אימוג'י ומקפים כדי שיהפכו לטוקנים נפרדים
+    const spaced = line.replace(new RegExp("(" + EMOJI_RE.source + "+)", "gu"), " $1 ").replace(/([-–—־:])/g, " $1 ");
+    const toks = spaced.split(/\s+/).filter(Boolean);
+    let i = 0;
+    while (i < toks.length) {
+      const run = [];
+      while (i < toks.length && !isDelimTok(toks[i])) { run.push(toks[i]); i++; }
+      const buf = [];
+      while (i < toks.length && isDelimTok(toks[i])) { buf.push(toks[i]); i++; }
+      if (!run.length) continue;                          // מפרידים מובילים (תאריך/כותרת) - מתעלמים
+      const bufStr = buf.join(" ");
+      const emo = emojiStatus(bufStr);
+      let status = detectStatus(bufStr) || emo.status;
+      const note = noteOf(bufStr) || emo.note || "";
+      if (!status && note) status = "HOME";
+      if (!status) status = currentStatus || "BASE";
+      const mission = status === "BASE" ? (detectMission(bufStr).mission || "ללא משימה") : "ללא משימה";
+      for (const cand of extractNamesFromRun(run, roster)) {
+        if (stripPunct(cand).replace(/\s/g, "").length < 2) continue;
+        const matches = matchSoldiers(roster, cand);
+        if (matches.length > 1) {
+          // טוקן בודד שמתאים לכמה = רסיס של שם לא-מזוהה (פלוגה אחרת), לא עמימות אמיתית
+          if (cand.includes(" ")) ambiguous.push({ originalName: cand, matches, status, mission, note });
+          else unknown.push(cand);
+        } else if (matches.length === 1) {
+          if (!seen.has(matches[0].name)) { seen.add(matches[0].name); ready.push({ sInfo: matches[0], status, mission, note }); }
+        } else unknown.push(cand);
+      }
+    }
+  }
+  const unk = [...new Set(unknown)].filter(u => !ready.some(r => r.sInfo.name.includes(u)));
+  const amb = ambiguous.filter(a => !ready.some(r => r.sInfo.name.includes(a.originalName)));
+  return { ready, ambiguous: amb, unknown: unk };
+}
+
 // התאמת שם למצבת: מעדיף התאמה מדויקת יחידה, אחרת כל ההתאמות החלקיות
 function matchSoldiers(roster, name) {
   const R = roster || [];
@@ -494,7 +582,7 @@ function parseCommand(text, roster, isRosterCmd) {
 
   // עדכון רגיל. דוח רב-שורתי → פרסר-שורות (שם→סטטוס/הערה); אחרת המנוע הקלאסי.
   const multiline = clean.includes("\n") && clean.split(/\r?\n/).filter(l => l.trim()).length >= 2;
-  const upd = multiline ? extractUpdatesLines(clean, roster) : extractUpdates(clean, roster);
+  const upd = multiline ? extractByScan(clean, roster) : extractUpdates(clean, roster);
   const hasIntent = !!detectStatus(clean) || !!detectMission(clean).mission;
   if (upd.ready.length || upd.ambiguous.length || (upd.unknown.length && hasIntent))
     return { type: "update", ...upd, dates: [date] };
@@ -699,9 +787,7 @@ function main() {
         const llm = await askLLM(clean, rosterList);
         if (llm) { ai = llm; console.log("↪️ LLM result used"); }
       }
-      console.log("⚙️", JSON.stringify(ai).slice(0, 200));
-      console.log("🔎RAW", JSON.stringify(clean).slice(0, 700)); // דיבוג זמני: מבנה ההודעה (מפרידי שורה)
-      if (ai.type === "update") console.log("🔎AMB", "ready=" + ai.ready.length, "unk=" + ai.unknown.length, "amb=[" + (ai.ambiguous || []).map(a => a.originalName.slice(0, 30)).join(" || ") + "]");
+      console.log("⚙️", ai.type, ai.type === "update" ? `ready=${ai.ready.length} amb=${ai.ambiguous.length} unk=${ai.unknown.length}` : "");
       const todayDate = getIsraelDate();
 
       if (ai.type === "clear") {
@@ -827,7 +913,7 @@ module.exports = {
   esc, stripPunct, hebNorm, hebSkel, editLE1, getIsraelDate, israelNowParts, resolveDate, addDays, nextWeekday,
   detectStatus, detectMission, matchSoldiers, tokensToNames, extractUpdates, detectBulk,
   detectRosterOp, parseCommand, buildActionFromLLM, needsLLM, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS,
-  noteOf, emojiStatus, stripEmojis, parseReportLine, extractUpdatesLines
+  noteOf, emojiStatus, stripEmojis, parseReportLine, extractUpdatesLines, extractByScan, extractNamesFromRun
 };
 
 if (require.main === module) main();
