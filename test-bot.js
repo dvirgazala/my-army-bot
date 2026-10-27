@@ -123,7 +123,7 @@ check("HTML ולא **", rep.includes("<b>") && !rep.includes("**"));
 check("עידן זרו תחת בבית", /🏠 בבית.*עידן זרו/s.test(rep));
 check("שיבוץ משימות מופיע", rep.includes("סיור 1") && rep.includes("אוהד עמילני"));
 check("סיכום נוכחים", rep.includes('סה"כ נוכחים'));
-check("כל 6 המחלקות בסדר", B.VALID_UNITS.every(u => rep.includes(u)));
+check("כל המחלקות המאוישות מופיעות בסדר", B.VALID_UNITS.filter(u => sol.some(s => s.unit === u)).every(u => rep.includes(u)));
 check("15 משימות מוגדרות", B.MISSIONS.length === 15);
 check('אין נהג משאית', !B.MISSIONS.some(m => m.includes("משאית")));
 

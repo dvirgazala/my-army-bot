@@ -17,7 +17,7 @@ const GROUP_CHAT_ID = "-1003748361029";
 const RLM = "‏";
 
 // מחלקות - סדר התצוגה בדוח. מסופחים משויכים למחלקה שתחתיה הם נמצאים; חובשים נפרדים.
-const VALID_UNITS = ['מפל"ג', "מחלקה 1", "מחלקה 2", "מחלקה 3", "חובשים", 'חמ"ל'];
+const VALID_UNITS = ['מפל"ג', "מחלקה 1", "מחלקה 2", "מחלקה 3", "חובשים", 'חמ"ל', "פלוגה ב"];
 
 // משימות רשמיות (מתוך "תקן יומי בחן")
 const MISSIONS = [
@@ -308,31 +308,33 @@ function isDelimTok(tok) {
   if (noteOf(tok)) return true;                          // מילת-הערה
   if (NOTE_TOKENS.has(hebNorm(t))) return true;
   if (STOP_WORDS.has(t)) return true;                    // דוח/מחלקה/פלוגה/את/של/יום...
-  if (/^(מחלקה|פלוגה|מסופחימ|מסופח|חובשימ|חמל|מפלג|נוכחימ|נמצאימ|צו)$/.test(hebNorm(t))) return true;
+  if (/^(מחלקה|פלוגה|מפלוגה|מסופחימ|מסופח|חובשימ|חמל|מפלג|נוכחימ|נמצאימ|צו)$/.test(hebNorm(t))) return true;
   return false;
 }
 
 // חילוץ שמות מרצף טוקנים "נקיים" (ללא מפרידים). מעדיף התאמה מדויקת ארוכה, אחרת יחידה.
 function extractNamesFromRun(run, roster) {
   const names = [];
-  let j = 0;
+  let j = 0, pend = [];
+  const flush = () => { if (pend.length) { names.push(pend.join(" ")); pend = []; } }; // טוקנים לא-מזוהים רצופים = שם אחד
   while (j < run.length) {
     let took = false;
     // מעבר 1: החלון הארוך ביותר שהוא שם מדויק במצבת
     for (let len = Math.min(4, run.length - j); len >= 2; len--) {
       const cand = run.slice(j, j + len).join(" ");
-      if ((roster || []).some(s => s.name === cand)) { names.push(cand); j += len; took = true; break; }
+      if ((roster || []).some(s => s.name === cand)) { flush(); names.push(cand); j += len; took = true; break; }
     }
     if (took) continue;
     // מעבר 2: החלון הארוך ביותר עם התאמה יחידה (כולל תת-קבוצה/כתיב)
     for (let len = Math.min(4, run.length - j); len >= 2; len--) {
       const cand = run.slice(j, j + len).join(" ");
-      if (matchSoldiers(roster, cand).length === 1) { names.push(cand); j += len; took = true; break; }
+      if (matchSoldiers(roster, cand).length === 1) { flush(); names.push(cand); j += len; took = true; break; }
     }
     if (took) continue;
-    // מעבר 3: טוקן בודד (ייפתר/יסומן כעמימות/לא-מזוהה בהמשך)
-    names.push(run[j]); j++;
+    // לא זוהה: צובר לשם מלא (בפורמט של דביר כל חייל מופרד בסטטוס, אז רצף = שם אחד)
+    pend.push(run[j]); j++;
   }
+  flush();
   return names;
 }
 
