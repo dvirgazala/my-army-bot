@@ -12,7 +12,7 @@ create table if not exists report_data (
   id bigint generated always as identity primary key,
   name text not null,
   status text not null default 'BASE',   -- BASE / HOME
-  mission text default 'ללא משימה',
+  mission text default 'ללא משימה',      -- משימה אמיתית, או הערה חופשית בקידוד "הערה: <טקסט>" (נפקד/שחרור/חופש/גימלים...)
   report_date date not null,
   deployment_name text,
   unique (name, report_date)             -- נדרש ל-onConflict של ה-upsert

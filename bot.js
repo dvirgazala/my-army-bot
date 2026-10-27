@@ -8,6 +8,9 @@ const https = require("https");
 // קבועים
 // ==========================================
 const DEPLOYMENT_NAME = process.env.DEPLOYMENT_NAME || "תע״מ בחן 2026";
+// הערה חופשית ליד השם (נפקד/שחרור/חופש...) נשמרת בתוך עמודת mission הקיימת,
+// כי ל-Supabase אין עמודת note (אין הרשאת DDL מרחוק). קידוד: mission="הערה: <טקסט>".
+const NOTE_PREFIX = "הערה: ";
 const COMMANDER_ID = 434078287;
 const GROUP_CHAT_ID = "-1003748361029";
 const RLM = "‏";
@@ -23,9 +26,10 @@ const MISSIONS = [
 ];
 
 // מילות סטטוס
-const HOME_WORDS = ["בבית", "הביתה", "בביתה", "הבייתה", "בייתה", "בית", "גימלים", "גימלמים", "גימל", "גימלת", "חופש", "חופשי", "חופשה", "שוחרר", "שוחררה", "יצא", "יצאה", "יוצא", "יוצאת"];
-const BASE_WORDS = ["בבסיס", "בסיס", "בקו", "קו", "נוכח", "נוכחת", "נמצא", "פה", "פלוגה", "חזר", "חזרה", "נכנס", "נכנסה", "עלה", "עלתה", "הגיע", "הגיעה"];
-const CLEAR_WORDS = ["אפס", "תאפס", "לאפס", "נקה", "תנקה", "אפסי", "מחק", "תמחק", "איפוס", "רענן"];
+const HOME_WORDS = ["בבית", "הביתה", "בביתה", "הבייתה", "בייתה", "בית", "גימלים", "גימלמים", "גימל", "גימלת", "חופש", "חופשי", "חופשה", "חול", "שוחרר", "שוחררה", "שחרור", "משוחרר", "משוחררת", "נפקד", "נפקדת", "מחלה", "חולה", "יצא", "יצאה", "יוצא", "יוצאת"];
+const BASE_WORDS = ["בבסיס", "בסיס", "בקו", "קו", "נוכח", "נוכחת", "נ", "נמצא", "פה", "פלוגה", "חזר", "חזרה", "נכנס", "נכנסה", "עלה", "עלתה", "הגיע", "הגיעה"];
+// "רענן" הוסר - הוא שם של חייל במצבת (רענן קלנר), לא פקודת איפוס
+const CLEAR_WORDS = ["אפס", "תאפס", "לאפס", "נקה", "תנקה", "אפסי", "מחק", "תמחק", "איפוס"];
 
 const DOW = { "ראשון": 0, "שני": 1, "שלישי": 2, "רביעי": 3, "חמישי": 4, "שישי": 5, "שבת": 6 };
 const DAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
@@ -145,12 +149,12 @@ function statusOfWord(w) {
 // נרמול ביטויים נפוצים לצורה קנונית (עוזר ל"חוכמה")
 function normalizePhrases(t) {
   return t
-    .replace(/לא\s+(מגיע|מגיעה|בא|באה|יגיע|תגיע|יהיה|תהיה|נמצא|נמצאת)/g, " בבית ")
+    .replace(/לא\s+(מגיע|מגיעה|בא|באה|יגיע|תגיע|יהיה|תהיה|נמצא|נמצאת)(?![א-ת])/g, " בבית ")
     .replace(/יצא(ה|ת)?\s+(הביתה|לבית|לחופש|לגימלים)/g, " בבית ")
     .replace(/נשאר(ת|ה)?\s+(ב)?בית/g, " בבית ")
     .replace(/חזר(ה|תי)?\s+ל?(בסיס|קו)/g, " בבסיס ")
     .replace(/על(ה|תה|יתי)\s+לקו/g, " בבסיס ")
-    .replace(/\s+/g, " ").trim();
+    .replace(/[^\S\r\n]+/g, " ").replace(/[ \t]*(\r?\n)[ \t]*/g, "\n").trim(); // משמר שורות (לפרסר-שורות)
 }
 function detectStatus(text) {
   for (const w of text.split(/\s+/)) { const s = statusOfWord(w); if (s) return s; }
@@ -173,6 +177,120 @@ function detectMission(text) {
   return { mission: null, cleaned: text };
 }
 
+// ==========================================
+// זיהוי הערות/סטטוסים חופשיים (פרסר-שורות)
+// ==========================================
+// מילים שמסמנות "סוף שם / תחילת סטטוס" בשורה ללא מקף
+const _NOTE_RAW = ["נפקד", "נפקדת", "שחרור", "משוחרר", "משוחררת", "שוחרר", "שוחררה",
+  "גימלים", "גימל", "גימלמים", "גימלת", "חול", "חופש", "חופשה", "מחלה", "חולה",
+  "מתייצב", "יתייצב", "מתייצבת", "יתייצבת", "מתחיל", "בהמשך", "דחיית", "דחיה", "דחייה"];
+const NOTE_TOKENS = new Set(_NOTE_RAW.map(hebNorm));
+
+// טקסט סטטוס → תווית הערה קנונית ("" אם אין). משווים נורמל-מול-נורמל (אותיות סופיות)
+function noteOf(text) {
+  const n = hebNorm(text);
+  const has = w => n.includes(hebNorm(w));
+  if (/דחיית\s*צו/.test(text) || has("דחיה") || has("דחיית")) return "דחיית צו";
+  if (has("בהמשך")) return "יתייצב בהמשך";
+  const mb = text.match(/מתחיל\s*ב[\s\-־]*([0-9]{1,2}\S*)/);
+  if (mb) return "מתחיל ב-" + mb[1];
+  if (has("נפקד")) return "נפקד";
+  if (has("משוחרר") || has("שחרור") || has("שוחרר")) return "שחרור";
+  if (has("גימל")) return "גימלים";
+  if (has("מחלה") || has("חולה")) return "מחלה";
+  if (has("חול") || has("חופש")) return "חופש";
+  return "";
+}
+
+// אימוג'י → {status, note}
+function emojiStatus(s) {
+  if (/[✅✔☑⭕]|🟢|👍|💪/u.test(s)) return { status: "BASE", note: "" };
+  if (/🚔|🚨|🔴|❌|⛔/u.test(s)) return { status: "HOME", note: "נפקד" };
+  if (/[⚕]|🤒|💊|🩺|🏥|🤕|🦽/u.test(s)) return { status: "HOME", note: "גימלים" };
+  if (/[✈]|🛫|🏖|🌴|🏝/u.test(s)) return { status: "HOME", note: "חופש" };
+  if (/🏠|🏡/u.test(s)) return { status: "HOME", note: "" };
+  return { status: null, note: "" };
+}
+function stripEmojis(s) {
+  return s.replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}\u{200D}\u{1F1E6}-\u{1F1FF}\u{1F3FB}-\u{1F3FF}\u{20E3}\u{2190}-\u{21FF}\u{2B55}]/gu, " ").replace(/[^\S\r\n]+/g, " ").trim();
+}
+
+// שורת כותרת-סטטוס ("נוכחים:" / "לא נמצאים:" / "בבית:") → BASE/HOME | null
+function lineStatusHeader(line) {
+  const n = stripPunct(line).replace(/:/g, "").trim();
+  if (/^(נוכחים|נמצאים|בבסיס|בסיס|בקו)$/.test(n)) return "BASE";
+  if (/^(לא נמצאים|לא נוכחים|חסרים|נפקדים|בבית|בבתים)$/.test(n)) return "HOME";
+  return null;
+}
+
+// פיצול שורה ל-{namePart, statusText}: מקף/נקודתיים ראשונים, אחרת מילת-סטטוס ראשונה
+function isStatusOrNoteTok(tok) {
+  return !!statusOfWord(tok) || NOTE_TOKENS.has(hebNorm(stripPunct(tok)));
+}
+function splitNameStatus(work) {
+  const sep = work.search(/[-–—־:]/);
+  if (sep >= 0) return { namePart: work.slice(0, sep).trim(), statusText: work.slice(sep + 1).trim() };
+  const toks = work.split(/\s+/);
+  for (let i = 1; i < toks.length; i++)
+    if (isStatusOrNoteTok(toks[i])) return { namePart: toks.slice(0, i).join(" "), statusText: toks.slice(i).join(" ") };
+  return { namePart: work, statusText: "" };
+}
+
+// ניתוח שורה בודדת → {kind:'header'|'name'|'skip', ...}
+function parseReportLine(line) {
+  let work = line.replace(/\*+/g, "").trim();
+  if (!work) return { kind: "skip" };
+  const emojiHints = emojiStatus(work);
+  work = stripEmojis(work);
+  if (!work) return emojiHints.status ? { kind: "name", namePart: "", statusText: "", emojiHints } : { kind: "skip" };
+  if (/^[\d.\/\-־\s]+$/.test(work)) return { kind: "skip" };                 // שורת תאריך/מספר בלבד
+  const hdr = lineStatusHeader(work);
+  if (hdr) return { kind: "header", status: hdr };
+  if (/דוח|דו"ח/.test(work)) return { kind: "skip" };                        // כותרת "דוח 1 מחלקה 2"
+  const firstTok = hebNorm(stripPunct(work).split(/\s+/)[0] || "");           // מנורמל (אותיות סופיות)
+  if (/^(פלוגה|מחלקה|מסופחימ|מסופח|מפלג|חובשימ|חמל)$/.test(firstTok)) return { kind: "skip" };
+  const { namePart, statusText } = splitNameStatus(work);
+  return { kind: "name", namePart, statusText, emojiHints };
+}
+
+// הפקת עדכונים מדוח רב-שורתי → {ready, ambiguous, unknown} (כל פריט נושא note)
+function extractUpdatesLines(text, roster) {
+  const lines = text.split(/\r?\n/);
+  let currentStatus = null;
+  const ready = [], ambiguous = [], unknown = [];
+  const seen = new Set();
+  for (const rawLine of lines) {
+    const p = parseReportLine(rawLine);
+    if (p.kind === "skip") continue;
+    if (p.kind === "header") { currentStatus = p.status; continue; }
+    const { namePart, emojiHints } = p;
+    const statusText = (p.statusText || "").replace(/[-–—־]/g, " ").trim();   // מקפים → רווח
+    if (!namePart || stripPunct(namePart).replace(/\s/g, "").length < 2) continue;
+
+    const mission = detectMission(statusText).mission;
+    let status = detectStatus(statusText);
+    let note = noteOf(statusText) || emojiHints.note || "";
+    if (!status) status = emojiHints.status;
+    if (!status && note) status = "HOME";            // נפקד/שחרור/גימלים/חופש/דחייה וכו' → לא נוכח
+    if (!status) status = currentStatus || "BASE";
+    // הערת-שוליים חופשית (למשל "מפלוגה א") - שומרים אם נשאר טקסט מעבר למילת הסטטוס
+    if (!note) {
+      const lo = stripPunct(statusText.split(/\s+/).filter(w => !statusOfWord(w)).join(" ")).trim();
+      if (lo && /[א-ת0-9]/.test(lo) && lo.length <= 20) note = lo;
+    }
+
+    const matches = matchSoldiers(roster, namePart.trim());
+    const mis = status === "BASE" ? (mission || "ללא משימה") : "ללא משימה";
+    if (matches.length > 1) ambiguous.push({ originalName: namePart.trim(), matches, status, mission: mis, note });
+    else if (matches.length === 1) {
+      if (!seen.has(matches[0].name)) { seen.add(matches[0].name); ready.push({ sInfo: matches[0], status, mission: mis, note }); }
+    } else unknown.push(namePart.trim());
+  }
+  const unk = [...new Set(unknown)].filter(u => !ready.some(r => r.sInfo.name.includes(u)));
+  const amb = ambiguous.filter(a => !ready.some(r => r.sInfo.name.includes(a.originalName)));
+  return { ready, ambiguous: amb, unknown: unk };
+}
+
 // התאמת שם למצבת: מעדיף התאמה מדויקת יחידה, אחרת כל ההתאמות החלקיות
 function matchSoldiers(roster, name) {
   const R = roster || [];
@@ -188,7 +306,26 @@ function matchSoldiers(roster, name) {
   if (raw[0] === "ו" && raw.length > 2) tries.push(raw.slice(1));
   const nick = NICKNAMES[hebNorm(raw)];
   if (nick) tries.push(nick);
+  // כינוי על המילה הראשונה בשם מלא (אלכס סטיליק → אלכסנדר סטיליק)
+  const parts = raw.split(/\s+/);
+  if (parts.length >= 2) {
+    const nk = NICKNAMES[hebNorm(parts[0])];
+    if (nk) tries.push([nk, ...parts.slice(1)].join(" "));
+  }
   for (const t of tries) { const r = doMatch(t); if (r.length) return r; }
+
+  // שלב 1.5: תת-קבוצת טוקנים - כל מילות השאילתה מופיעות בשם המלא בכל סדר
+  // (חיים קורקוס ⊆ חיים מר קורקוס, זרו וואניו ⊆ וואניו זרו, שייאל≈שיאל)
+  const splitToks = x => x.split(/[\s\-־]+/).map(hebNorm).filter(Boolean);   // מפצל גם על מקף
+  const qtok = splitToks(raw).filter(t => t.length >= 2);
+  if (qtok.length >= 2) {
+    const tokMatch = (q, t) => q === t || (hebSkel(q).length >= 2 && hebSkel(q) === hebSkel(t)) || editLE1(q, t);
+    const sub = R.filter(s => {
+      const stok = splitToks(s.name);
+      return qtok.every(q => stok.some(t => tokMatch(q, t)));
+    });
+    if (sub.length) return sub;
+  }
 
   // שלב 2: גרסאות כתיב (שלד השם) - עומרי≈עמרי, ז'אן≈זאן
   const cs = hebSkel(raw);
@@ -343,15 +480,19 @@ function parseCommand(text, roster, isRosterCmd) {
   // נרמול ביטויים נפוצים (לא מגיע→בבית, חזר לבסיס→בבסיס וכו')
   const clean = normalizePhrases(raw);
 
-  // איפוס
-  if (CLEAR_WORDS.some(w => clean.includes(w)) && (clean.includes("דוח") || clean.includes("דו"))) return { type: "clear", targetDate: date };
+  // איפוס - רק כפקודה קצרה/בתחילת הודעה, לא שם חייל באמצע דוח רב-שורתי
+  const firstWord = stripPunct(clean).split(/\s+/)[0] || "";
+  const isShortCmd = !clean.includes("\n") && stripPunct(clean).split(/\s+/).length <= 4;
+  const clearIntent = CLEAR_WORDS.includes(firstWord) || (isShortCmd && CLEAR_WORDS.some(w => hw(clean, w)));
+  if (clearIntent && (hw(clean, "דוח") || clean.includes('דו"ח') || hw(clean, "דו"))) return { type: "clear", targetDate: date };
 
   // עדכון גורף
   const bulk = detectBulk(clean);
   if (bulk) return { ...bulk, dates: [date] };
 
-  // עדכון רגיל. שמות לא-מזוהים נחשבים לעדכון רק אם יש כוונת עדכון (סטטוס/משימה).
-  const upd = extractUpdates(clean, roster);
+  // עדכון רגיל. דוח רב-שורתי → פרסר-שורות (שם→סטטוס/הערה); אחרת המנוע הקלאסי.
+  const multiline = clean.includes("\n") && clean.split(/\r?\n/).filter(l => l.trim()).length >= 2;
+  const upd = multiline ? extractUpdatesLines(clean, roster) : extractUpdates(clean, roster);
   const hasIntent = !!detectStatus(clean) || !!detectMission(clean).mission;
   if (upd.ready.length || upd.ambiguous.length || (upd.unknown.length && hasIntent))
     return { type: "update", ...upd, dates: [date] };
@@ -410,9 +551,10 @@ function generateReport(soldiers, dateString, deployment) {
     if (us.length === 0) continue;
     const base = us.filter(s => s.status === "BASE");
     const home = us.filter(s => s.status === "HOME");
+    const label = s => esc(s.name) + (s.note ? ` (${esc(s.note)})` : "");
     r += `⬛ <b>${esc(u)}</b> (${base.length}/${us.length})\n`;
-    r += `🏡 בבסיס (${base.length}): ${base.length ? base.map(s => esc(s.name)).join(", ") : "—"}\n`;
-    if (home.length) r += `🏠 בבית (${home.length}): ${home.map(s => esc(s.name)).join(", ")}\n`;
+    r += `🏡 בבסיס (${base.length}): ${base.length ? base.map(label).join(", ") : "—"}\n`;
+    if (home.length) r += `🏠 בבית (${home.length}): ${home.map(label).join(", ")}\n`;
     r += "\n";
   }
 
@@ -464,8 +606,11 @@ function main() {
     const { error } = await supabase.from("report_data").upsert(rows, { onConflict: "name,report_date" });
     if (error) throw error;
   }
-  const rowOf = (sInfo, status, mission, date) =>
-    ({ name: sInfo.name, status, mission, report_date: date, deployment_name: DEPLOYMENT_NAME });
+  // ההערה מקודדת בתוך mission (אין עמודת note ב-DB). משימה אמיתית גוברת על הערה.
+  const rowOf = (sInfo, status, mission, note, date) => {
+    const m = (note && (!mission || mission === "ללא משימה")) ? NOTE_PREFIX + note : mission;
+    return { name: sInfo.name, status, mission: m, report_date: date, deployment_name: DEPLOYMENT_NAME };
+  };
 
   // --- AI fallback (אופציונלי) - רץ רק כשהמנוע הדטרמיניסטי לא הצליח ---
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
@@ -566,7 +711,7 @@ function main() {
         for (const date of dates)
           for (const s of rosterList) {
             if (ai.unit && ai.unit !== "all" && s.unit !== ai.unit) continue;
-            rows.push(rowOf(s, ai.status || "BASE", "ללא משימה", date));
+            rows.push(rowOf(s, ai.status || "BASE", "ללא משימה", null, date));
           }
         await upsertReports(rows);
         const scope = ai.unit && ai.unit !== "all" ? ai.unit : "כל הפלוגה";
@@ -583,7 +728,7 @@ function main() {
           return send(chatId, `❓ <b>"${esc(first.originalName)}" - איזה מהם?</b>`, { reply_markup: { inline_keyboard: kb } });
         }
         const rows = [];
-        for (const date of dates) for (const it of ai.ready) rows.push(rowOf(it.sInfo, it.status, it.mission, date));
+        for (const date of dates) for (const it of ai.ready) rows.push(rowOf(it.sInfo, it.status, it.mission, it.note, date));
         await upsertReports(rows);
         let txt = ai.ready.length ? `✅ נקלט ביומן [${esc(DEPLOYMENT_NAME)}] (${ai.ready.length} חיילים).` : "";
         if (ai.unknown.length) txt += `\n⚠️ לא במצבת: ${esc(ai.unknown.join(", "))}`;
@@ -595,7 +740,10 @@ function main() {
         const { data: daily } = await supabase.from("report_data").select("*").eq("report_date", date);
         const merged = rosterList.map(s => {
           const u = (daily || []).find(x => x.name === s.name);
-          return { name: s.name, unit: s.unit, status: u ? u.status : "BASE", mission: u ? u.mission : "ללא משימה" };
+          const rawM = u ? u.mission : "ללא משימה";
+          const isNote = typeof rawM === "string" && rawM.startsWith(NOTE_PREFIX);
+          return { name: s.name, unit: s.unit, status: u ? u.status : "BASE",
+            mission: isNote ? "ללא משימה" : rawM, note: isNote ? rawM.slice(NOTE_PREFIX.length) : "" };
         });
         return send(chatId, generateReport(merged, date, DEPLOYMENT_NAME));
       }
@@ -641,7 +789,7 @@ function main() {
     const current = pending.ambiguous[0];
     if (isNaN(idx) || idx < 0 || idx >= current.matches.length) return bot.answerCallbackQuery(query.id, { text: "בחירה לא תקינה." });
 
-    pending.resolved.push({ sInfo: current.matches[idx], status: current.status, mission: current.mission });
+    pending.resolved.push({ sInfo: current.matches[idx], status: current.status, mission: current.mission, note: current.note });
     const chosen = current.matches[idx].name;
     pending.ambiguous.shift();
 
@@ -657,7 +805,7 @@ function main() {
     const all = [...pending.ready, ...pending.resolved];
     try {
       const rows = [];
-      for (const date of pending.dates) for (const it of all) rows.push(rowOf(it.sInfo, it.status, it.mission, date));
+      for (const date of pending.dates) for (const it of all) rows.push(rowOf(it.sInfo, it.status, it.mission, it.note, date));
       await upsertReports(rows);
       let txt = `✅ <b>${all.length} חיילים עודכנו.</b>`;
       if (pending.unknownNames.length) txt += `\n⚠️ לא במצבת: ${esc(pending.unknownNames.join(", "))}`;
@@ -673,7 +821,8 @@ function main() {
 module.exports = {
   esc, stripPunct, hebNorm, hebSkel, editLE1, getIsraelDate, israelNowParts, resolveDate, addDays, nextWeekday,
   detectStatus, detectMission, matchSoldiers, tokensToNames, extractUpdates, detectBulk,
-  detectRosterOp, parseCommand, buildActionFromLLM, needsLLM, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS
+  detectRosterOp, parseCommand, buildActionFromLLM, needsLLM, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS,
+  noteOf, emojiStatus, stripEmojis, parseReportLine, extractUpdatesLines
 };
 
 if (require.main === module) main();

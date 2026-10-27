@@ -195,5 +195,80 @@ eq("buildActionFromLLM show_report", B.buildActionFromLLM({ type: "show_report" 
 eq("LLM לא יכול להפעיל גורף (בטיחות)", B.buildActionFromLLM({ type: "bulk_update", unit: "all", status: "BASE" }, R), null);
 eq("LLM לא יכול לאפס (בטיחות)", B.buildActionFromLLM({ type: "clear" }, R), null);
 
+// --- פורמט חופשי: סטטוסים, הערות, אימוג'י (דוח רב-שורתי אמיתי) ---
+console.log("\n🧪 פורמט חופשי - סטטוסים והערות");
+// תוויות הערה
+eq("noteOf נפקד", B.noteOf("נפקד"), "נפקד");
+eq("noteOf שחרור (משוחרר)", B.noteOf("משוחרר"), "שחרור");
+eq('noteOf חו"ל → חופש', B.noteOf('חו"ל'), "חופש");
+eq("noteOf חול → חופש", B.noteOf("חול"), "חופש");
+eq("noteOf גימלים", B.noteOf("גימלים"), "גימלים");
+eq("noteOf מתייצב בהמשך", B.noteOf("מתייצב בהמשך"), "יתייצב בהמשך");
+eq("noteOf מתחיל ב28", B.noteOf("מתחיל ב28 אלת"), "מתחיל ב-28");
+eq("noteOf דחיית צו", B.noteOf("דחיית צו"), "דחיית צו");
+eq("noteOf רגיל → ריק", B.noteOf("נוכח"), "");
+// אימוג'י
+eq("✅ → BASE", B.emojiStatus("חיים קורקוס✅").status, "BASE");
+eq("🚔 → HOME", B.emojiStatus("x 🚔").status, "HOME");
+eq("🚔 → note נפקד", B.emojiStatus("x 🚔").note, "נפקד");
+eq("✈️ → HOME/חופש", B.emojiStatus("x ✈️").note, "חופש");
+eq("⚕️ → HOME/גימלים", B.emojiStatus("x 👨🏻‍⚕️").note, "גימלים");
+
+const RF = [
+  { name: "רענן קלנר", unit: "חובשים" },
+  { name: "דניאל צדוק", unit: "מחלקה 1" },
+  { name: "אור בלומנטל", unit: "מחלקה 1" },
+  { name: "דולב מיכאלי", unit: "מחלקה 3" },
+  { name: "אופיר חי", unit: "מחלקה 3" },
+  { name: "חיים מר קורקוס", unit: "מחלקה 3" },
+  { name: "וואניו זרו", unit: "מחלקה 2" },
+  { name: "אלכסנדר סטיליק", unit: "מחלקה 3" },
+  { name: "כפיר קירלי", unit: "מחלקה 2" },
+];
+const report = `27.10.26
+מחלקה 1: 27.10
+רענן קלנר - נ
+דניאל צדוק- חול
+אור בלומנטל- בית
+מחלקה 3
+חיים קורקוס✅
+אופיר חי👨🏻‍⚕️גימלים
+דולב מיכאלי - נפקד 🚔
+אלכס סטיליק✅
+זרו וואניו- נוכח
+*לא נמצאים* :
+כפיר קירלי -שחרור`;
+
+const rf = B.parseCommand(report, RF);
+eq("דוח עם 'רענן' → update ולא clear", rf.type, "update");
+const fn = Object.fromEntries(rf.ready.map(x => [x.sInfo.name, x]));
+eq('"נ" → BASE (רענן קלנר)', (fn["רענן קלנר"] || {}).status, "BASE");
+eq("חול → HOME", (fn["דניאל צדוק"] || {}).status, "HOME");
+eq("חול → note חופש", (fn["דניאל צדוק"] || {}).note, "חופש");
+eq("בית → HOME", (fn["אור בלומנטל"] || {}).status, "HOME");
+eq("✅ → BASE (חיים מר קורקוס)", (fn["חיים מר קורקוס"] || {}).status, "BASE");
+eq("גימלים (אימוג'י+טקסט מודבק)", (fn["אופיר חי"] || {}).note, "גימלים");
+eq("נפקד 🚔 → HOME", (fn["דולב מיכאלי"] || {}).status, "HOME");
+eq("נפקד 🚔 → note נפקד", (fn["דולב מיכאלי"] || {}).note, "נפקד");
+eq("אלכס סטיליק → אלכסנדר סטיליק (כינוי במילה ראשונה)", !!fn["אלכסנדר סטיליק"], true);
+eq("זרו וואניו → וואניו זרו (סדר הפוך, תת-קבוצה)", !!fn["וואניו זרו"], true);
+eq('כותרת "לא נמצאים" → HOME', (fn["כפיר קירלי"] || {}).status, "HOME");
+eq("שחרור → note שחרור", (fn["כפיר קירלי"] || {}).note, "שחרור");
+
+// התאמת תת-קבוצת טוקנים (שם עם מילה אמצעית / מקף)
+console.log("\n🧪 התאמת שם - מילה אמצעית / סדר / מקף");
+eq("חיים קורקוס ⊆ חיים מר קורקוס", (B.matchSoldiers(RF, "חיים קורקוס")[0] || {}).name, "חיים מר קורקוס");
+eq("זרו וואניו ⊆ וואניו זרו", (B.matchSoldiers(RF, "זרו וואניו")[0] || {}).name, "וואניו זרו");
+
+// הדוח מציג הערה ליד השם
+console.log("\n🧪 דוח - הערה ליד השם");
+const solN = [
+  { name: "דולב מיכאלי", unit: "מחלקה 3", status: "HOME", mission: "ללא משימה", note: "נפקד" },
+  { name: "כפיר קירלי", unit: "מחלקה 2", status: "HOME", mission: "ללא משימה", note: "שחרור" },
+];
+const repN = B.generateReport(solN, "2026-10-27", "בחן");
+check("הדוח כולל 'דולב מיכאלי (נפקד)'", repN.includes("דולב מיכאלי (נפקד)"));
+check("הדוח כולל 'כפיר קירלי (שחרור)'", repN.includes("כפיר קירלי (שחרור)"));
+
 console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);
