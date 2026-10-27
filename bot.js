@@ -471,7 +471,8 @@ function detectRosterOp(text, roster) {
 
 // --- המנוע המרכזי: טקסט → פעולה (ללא LLM) ---
 function parseCommand(text, roster, isRosterCmd) {
-  const raw = (text || "").trim();
+  // נרמול כל מפרידי-השורה לסטנדרט \n (הנייד לפעמים שולח U+2028/U+2029/CR/VT במקום Enter)
+  const raw = (text || "").replace(/\r\n?|[\u2028\u2029\u000B\u000C\u0085]/g, "\n").trim();
   const date = resolveDate(raw, getIsraelDate());
 
   // ניהול מצבת (הוספה/הסרה/שינוי שם) - לפי מילות מפתח מפורשות
@@ -485,7 +486,7 @@ function parseCommand(text, roster, isRosterCmd) {
   const firstWord = stripPunct(clean).split(/\s+/)[0] || "";
   const isShortCmd = !clean.includes("\n") && stripPunct(clean).split(/\s+/).length <= 4;
   const clearIntent = CLEAR_WORDS.includes(firstWord) || (isShortCmd && CLEAR_WORDS.some(w => hw(clean, w)));
-  if (clearIntent && (hw(clean, "דוח") || clean.includes('דו"ח') || hw(clean, "דו"))) return { type: "clear", targetDate: date };
+  if (clearIntent && (clean.includes("דוח") || clean.includes('דו"ח'))) return { type: "clear", targetDate: date };
 
   // עדכון גורף
   const bulk = detectBulk(clean);
@@ -699,6 +700,8 @@ function main() {
         if (llm) { ai = llm; console.log("↪️ LLM result used"); }
       }
       console.log("⚙️", JSON.stringify(ai).slice(0, 200));
+      console.log("🔎RAW", JSON.stringify(clean).slice(0, 700)); // דיבוג זמני: מבנה ההודעה (מפרידי שורה)
+      if (ai.type === "update") console.log("🔎AMB", "ready=" + ai.ready.length, "unk=" + ai.unknown.length, "amb=[" + (ai.ambiguous || []).map(a => a.originalName.slice(0, 30)).join(" || ") + "]");
       const todayDate = getIsraelDate();
 
       if (ai.type === "clear") {
