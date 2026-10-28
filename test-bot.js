@@ -317,5 +317,25 @@ check("חייל שלא דווח (במחלקה חלקית) מופיע תחת לא
 check("מי שדווח נוכח לא בלא-דווח", /🏡 בבסיס[\s\S]*אוהד עמילני/.test(repU));
 check("סיכום כולל ספירת לא דווח", /לא דווח: \d+/.test(repU));
 
+// --- תאריך: ברירת מחדל מחר, "היום" = תיקון ---
+console.log("\n🧪 תאריך - ברירת מחדל מחר / תיקון היום");
+const TODAY = B.getIsraelDate();
+const TOM = B.addDays(TODAY, 1);
+let du = B.parseCommand("אוהד עמילני בבית", R);
+eq("דיווח בלי תאריך → מחר", du.dates[0], TOM);
+eq("...לא תיקון", !!du.correctionToday, false);
+du = B.parseCommand("אוהד עמילני בבית היום", R);
+eq('"היום" → תאריך היום', du.dates[0], TODAY);
+eq('"היום" → תיקון (correctionToday)', du.correctionToday, true);
+du = B.parseCommand("אוהד עמילני בבית מחר", R);
+eq('"מחר" מפורש → מחר', du.dates[0], TOM);
+eq("...לא תיקון", !!du.correctionToday, false);
+du = B.parseCommand("כל מחלקה 1 בבסיס", R);
+eq("עדכון גורף בלי תאריך → מחר", du.dates[0], TOM);
+check("hasExplicitDate מזהה 'מחר'", B.hasExplicitDate("דני בבית מחר"));
+check("hasExplicitDate על טקסט רגיל = false", !B.hasExplicitDate("דני בבית"));
+check("dateLabel מחר", B.dateLabel(TOM, TODAY).startsWith("מחר"));
+check("dateLabel היום", B.dateLabel(TODAY, TODAY).startsWith("היום"));
+
 console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);

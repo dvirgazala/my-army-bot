@@ -131,6 +131,25 @@ function resolveDate(text, todayIso) {
   return todayIso;
 }
 
+// האם יש בטקסט ציון תאריך מפורש (מחר/היום/יום ג'/31.10)?
+function hasExplicitDate(t) {
+  return /מחרתיים|מחר|אתמול|היום/.test(t)
+    || /יום (ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/.test(t)
+    || /ב(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)(?![א-ת])/.test(t)
+    || /\d{1,2}[\/.]\d{1,2}/.test(t);
+}
+
+// תווית תאריך קריאה: "מחר, יום ג' 29.10" / "היום, ..." / "יום ג' 29.10"
+function dateLabel(iso, todayIso) {
+  const today = todayIso || getIsraelDate();
+  const [y, mo, dd] = iso.split("-").map(Number);
+  const dow = new Date(Date.UTC(y, mo - 1, dd)).getUTCDay();
+  const dm = `יום ${DAY_NAMES[dow]} ${String(dd).padStart(2, "0")}.${String(mo).padStart(2, "0")}`;
+  if (iso === today) return "היום, " + dm;
+  if (iso === addDays(today, 1)) return "מחר, " + dm;
+  return dm;
+}
+
 // הסרת ביטויי תאריך מהטקסט (כדי שלא יתפרשו כשמות)
 function stripDates(text) {
   return text
@@ -568,7 +587,11 @@ function detectRosterOp(text, roster) {
 function parseCommand(text, roster, isRosterCmd) {
   // נרמול כל מפרידי-השורה לסטנדרט \n (הנייד לפעמים שולח U+2028/U+2029/CR/VT במקום Enter)
   const raw = (text || "").replace(/\r\n?|[\u2028\u2029\u000B\u000C\u0085]/g, "\n").trim();
-  const date = resolveDate(raw, getIsraelDate());
+  const today = getIsraelDate();
+  const date = resolveDate(raw, today);
+  // דיווח = תמיד למחר, אלא אם צוין תאריך מפורש. "היום" = תיקון (דורש אישור).
+  const saysToday = hw(raw, "היום");
+  const reportDate = saysToday ? today : (hasExplicitDate(raw) ? date : addDays(today, 1));
 
   // ניהול מצבת (הוספה/הסרה/שינוי שם) - לפי מילות מפתח מפורשות
   const rosterOp = detectRosterOp(raw, roster);
@@ -585,14 +608,14 @@ function parseCommand(text, roster, isRosterCmd) {
 
   // עדכון גורף
   const bulk = detectBulk(clean);
-  if (bulk) return { ...bulk, dates: [date] };
+  if (bulk) return { ...bulk, dates: [reportDate], correctionToday: saysToday };
 
   // עדכון רגיל. דוח רב-שורתי → פרסר-שורות (שם→סטטוס/הערה); אחרת המנוע הקלאסי.
   const multiline = clean.includes("\n") && clean.split(/\r?\n/).filter(l => l.trim()).length >= 2;
   const upd = multiline ? extractByScan(clean, roster) : extractUpdates(clean, roster);
   const hasIntent = !!detectStatus(clean) || !!detectMission(clean).mission;
   if (upd.ready.length || upd.ambiguous.length || (upd.unknown.length && hasIntent))
-    return { type: "update", ...upd, dates: [date] };
+    return { type: "update", ...upd, dates: [reportDate], correctionToday: saysToday };
 
   // הצגת דוח
   if (/דוח|דו"ח|מצב|סטטוס/.test(clean) || hw(clean, "הצג") || hw(clean, "שלח"))
@@ -718,6 +741,40 @@ function main() {
     return { name: sInfo.name, status, mission: m, report_date: date, deployment_name: DEPLOYMENT_NAME };
   };
 
+  // --- החלת עדכון (רגיל/גורף) + שער אישור לתיקון היום ---
+  async function applyUpdate(chatId, pkey, ai) {
+    const dates = ai.dates && ai.dates.length ? ai.dates : [getIsraelDate()];
+    if (ai.ambiguous && ai.ambiguous.length) {
+      pendingConfirmations.set(pkey, { kind: "ambig", ready: ai.ready, ambiguous: ai.ambiguous, resolved: [], dates, unknownNames: ai.unknown });
+      const first = ai.ambiguous[0];
+      const kb = first.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${i}` }]);
+      return send(chatId, `❓ <b>"${esc(first.originalName)}" - איזה מהם?</b>`, { reply_markup: { inline_keyboard: kb } });
+    }
+    const rows = [];
+    for (const date of dates) for (const it of ai.ready) rows.push(rowOf(it.sInfo, it.status, it.mission, it.note, date));
+    await upsertReports(rows);
+    let txt = ai.ready.length ? `✅ נקלט ל<b>${esc(dateLabel(dates[0]))}</b> (${ai.ready.length} חיילים).` : "";
+    if (ai.unknown && ai.unknown.length) txt += `\n⚠️ לא במצבת: ${esc(ai.unknown.join(", "))}`;
+    return txt ? send(chatId, txt) : send(chatId, "לא זוהו שמות מהמצבת. נסה: <code>*דני בבית</code>");
+  }
+  async function applyBulk(chatId, ai, rosterList) {
+    const dates = ai.dates && ai.dates.length ? ai.dates : [getIsraelDate()];
+    const rows = [];
+    for (const date of dates) for (const s of rosterList) {
+      if (ai.unit && ai.unit !== "all" && s.unit !== ai.unit) continue;
+      rows.push(rowOf(s, ai.status || "BASE", "ללא משימה", null, date));
+    }
+    await upsertReports(rows);
+    const scope = ai.unit && ai.unit !== "all" ? ai.unit : "כל הפלוגה";
+    const st = (ai.status || "BASE") === "HOME" ? "בבית" : "בבסיס";
+    return send(chatId, `✅ עדכון גורף ל<b>${esc(dateLabel(dates[0]))}</b>: ${esc(scope)} → ${st} (${rows.length} חיילים).`);
+  }
+  function askCorrection(chatId, pkey, ai) {           // "היום" = תיקון, דורש אישור
+    pendingConfirmations.set(pkey, { kind: "correct", ai });
+    return send(chatId, `✏️ שים לב: זה <b>תיקון ל${esc(dateLabel(getIsraelDate()))}</b> (לא למחר). לעדכן את היום?`,
+      { reply_markup: { inline_keyboard: [[{ text: "✅ כן, תקן היום", callback_data: "cfm_yes" }, { text: "❌ לא", callback_data: "cfm_no" }]] } });
+  }
+
   // --- AI fallback (אופציונלי) - רץ רק כשהמנוע הדטרמיניסטי לא הצליח ---
   const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
   const GEMINI_KEY = process.env.GEMINI_KEY;
@@ -767,11 +824,9 @@ function main() {
     .then(() => console.log(`🚀 גרסה 71 באוויר | מבצע: ${DEPLOYMENT_NAME} | AI fallback: ${LLM_PROVIDER || "כבוי"}`))
     .catch(e => console.error("❌ Webhook:", e.message));
 
-  cron.schedule("0 18 * * 0,1,2,3,6", () =>
-    send(GROUP_CHAT_ID, `⚠️ <b>תזכורת [${esc(DEPLOYMENT_NAME)}]:</b> נא לשלוח דוח 1 למחר!`),
-    { timezone: "Asia/Jerusalem" });
-  cron.schedule("0 18 * * 4", () =>
-    send(GROUP_CHAT_ID, `⚠️ <b>תזכורת סופ"ש [${esc(DEPLOYMENT_NAME)}]:</b> נא לשלוח דוח 1 לשישי-שבת!`),
+  // תזכורת יומית ב-18:00 להגיש דוח למחר
+  cron.schedule("0 18 * * *", () =>
+    send(GROUP_CHAT_ID, `⚠️ <b>תזכורת [${esc(DEPLOYMENT_NAME)}]:</b> נא להגיש דוח 1 למחר 🙏`),
     { timezone: "Asia/Jerusalem" });
 
   bot.on("message", async (msg) => {
@@ -812,33 +867,13 @@ function main() {
       }
 
       if (ai.type === "bulk_update") {
-        const dates = ai.dates && ai.dates.length ? ai.dates : [todayDate];
-        const rows = [];
-        for (const date of dates)
-          for (const s of rosterList) {
-            if (ai.unit && ai.unit !== "all" && s.unit !== ai.unit) continue;
-            rows.push(rowOf(s, ai.status || "BASE", "ללא משימה", null, date));
-          }
-        await upsertReports(rows);
-        const scope = ai.unit && ai.unit !== "all" ? ai.unit : "כל הפלוגה";
-        const st = (ai.status || "BASE") === "HOME" ? "בבית" : "בבסיס";
-        return send(chatId, `✅ עדכון גורף: ${esc(scope)} → ${st} (${rows.length} חיילים).`);
+        if (ai.correctionToday) return askCorrection(chatId, pkey, ai);
+        return applyBulk(chatId, ai, rosterList);
       }
 
       if (ai.type === "update") {
-        const dates = ai.dates && ai.dates.length ? ai.dates : [todayDate];
-        if (ai.ambiguous.length) {
-          pendingConfirmations.set(pkey, { ready: ai.ready, ambiguous: ai.ambiguous, resolved: [], dates, unknownNames: ai.unknown });
-          const first = ai.ambiguous[0];
-          const kb = first.matches.map((s, i) => [{ text: s.name, callback_data: `amb_${i}` }]);
-          return send(chatId, `❓ <b>"${esc(first.originalName)}" - איזה מהם?</b>`, { reply_markup: { inline_keyboard: kb } });
-        }
-        const rows = [];
-        for (const date of dates) for (const it of ai.ready) rows.push(rowOf(it.sInfo, it.status, it.mission, it.note, date));
-        await upsertReports(rows);
-        let txt = ai.ready.length ? `✅ נקלט ביומן [${esc(DEPLOYMENT_NAME)}] (${ai.ready.length} חיילים).` : "";
-        if (ai.unknown.length) txt += `\n⚠️ לא במצבת: ${esc(ai.unknown.join(", "))}`;
-        return txt ? send(chatId, txt) : send(chatId, "לא זוהו שמות מהמצבת. נסה: <code>*דני בבית</code>");
+        if (ai.correctionToday) return askCorrection(chatId, pkey, ai);
+        return applyUpdate(chatId, pkey, ai);
       }
 
       if (ai.type === "show_report") {
@@ -888,10 +923,31 @@ function main() {
     const chatId = query.message.chat.id;
     const pkey = `${chatId}:${query.from.id}`;
     const data = query.data;
+
+    // אישור/ביטול של תיקון להיום
+    if (data === "cfm_yes" || data === "cfm_no") {
+      const p = pendingConfirmations.get(pkey);
+      if (!p || p.kind !== "correct") return bot.answerCallbackQuery(query.id, { text: "פג תוקף, שלח שוב." });
+      pendingConfirmations.delete(pkey);
+      if (data === "cfm_no") {
+        await edit("❌ בוטל — היום לא עודכן.", { chat_id: chatId, message_id: query.message.message_id });
+        return bot.answerCallbackQuery(query.id);
+      }
+      await edit("✏️ מעדכן את היום...", { chat_id: chatId, message_id: query.message.message_id });
+      try {
+        if (p.ai.type === "bulk_update") {
+          const { data: roster } = await supabase.from("soldiers").select("name, unit").eq("is_active", true);
+          await applyBulk(chatId, p.ai, roster || []);
+        } else await applyUpdate(chatId, pkey, p.ai);
+      } catch (e) { console.error("🔴 cfm:", e); }
+      return bot.answerCallbackQuery(query.id);
+    }
+
     if (!data.startsWith("amb_")) return bot.answerCallbackQuery(query.id);
     const idx = parseInt(data.split("_").pop());
     if (!pendingConfirmations.has(pkey)) return bot.answerCallbackQuery(query.id, { text: "הפעולה פגה תוקף, שלח שוב." });
     const pending = pendingConfirmations.get(pkey);
+    if (!pending.ambiguous) return bot.answerCallbackQuery(query.id, { text: "פג תוקף, שלח שוב." });
     const current = pending.ambiguous[0];
     if (isNaN(idx) || idx < 0 || idx >= current.matches.length) return bot.answerCallbackQuery(query.id, { text: "בחירה לא תקינה." });
 
@@ -928,7 +984,8 @@ module.exports = {
   esc, stripPunct, hebNorm, hebSkel, editLE1, getIsraelDate, israelNowParts, resolveDate, addDays, nextWeekday,
   detectStatus, detectMission, matchSoldiers, tokensToNames, extractUpdates, detectBulk,
   detectRosterOp, parseCommand, buildActionFromLLM, needsLLM, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS,
-  noteOf, emojiStatus, stripEmojis, parseReportLine, extractUpdatesLines, extractByScan, extractNamesFromRun
+  noteOf, emojiStatus, stripEmojis, parseReportLine, extractUpdatesLines, extractByScan, extractNamesFromRun,
+  hasExplicitDate, dateLabel
 };
 
 if (require.main === module) main();
