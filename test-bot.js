@@ -122,7 +122,7 @@ check("יום שני 26.10", rep.includes("יום שני 26.10"));
 check("HTML ולא **", rep.includes("<b>") && !rep.includes("**"));
 check("עידן זרו תחת בבית", /🏠 בבית.*עידן זרו/s.test(rep));
 check("שיבוץ משימות מופיע", rep.includes("סיור 1") && rep.includes("אוהד עמילני"));
-check("סיכום נוכחים", rep.includes('סה"כ נוכחים'));
+check("סיכום נוכחים", rep.includes("נוכחים:") && rep.includes("לא דווח:"));
 check("כל המחלקות המאוישות מופיעות בסדר", B.VALID_UNITS.filter(u => sol.some(s => s.unit === u)).every(u => rep.includes(u)));
 check("15 משימות מוגדרות", B.MISSIONS.length === 15);
 check('אין נהג משאית', !B.MISSIONS.some(m => m.includes("משאית")));
@@ -305,6 +305,17 @@ eq("כותרת נוכחים → יהונתן יוסף BASE", (fm["יהונתן �
 eq("3 שמות ברצף בלי מפריד → כולם נקלטו", ["יהונתן יוסף", "עמית מזרחי", "איתי חניה"].every(n => fm[n]), true);
 eq("כותרת לא נמצאים → כפיר HOME", (fm["כפיר קירלי"] || {}).status, "HOME");
 eq("כפיר note שחרור", (fm["כפיר קירלי"] || {}).note, "שחרור");
+
+// --- מצב "לא דווח" (חייל בלי דיווח ליום) ---
+console.log("\n🧪 מצב 'לא דווח'");
+const solU = R.map(s => ({ ...s, status: "UNREPORTED", mission: "ללא משימה", note: "" }));
+solU.find(s => s.name === "אוהד עמילני").status = "BASE";          // דווח נוכח
+solU.find(s => s.name === "עידן זרו").status = "HOME";             // דווח בבית
+const repU = B.generateReport(solU, "2026-10-26", "בחן");
+check("מופיע 'לא דווח'", repU.includes("לא דווח"));
+check("חייל שלא דווח (במחלקה חלקית) מופיע תחת לא דווח", /❓ לא דווח[\s\S]*שקד אורלוב/.test(repU));
+check("מי שדווח נוכח לא בלא-דווח", /🏡 בבסיס[\s\S]*אוהד עמילני/.test(repU));
+check("סיכום כולל ספירת לא דווח", /לא דווח: \d+/.test(repU));
 
 console.log(`\n${"=".repeat(40)}\n📊 תוצאות: ${passed} עברו, ${failed} נכשלו`);
 process.exit(failed > 0 ? 1 : 0);

@@ -648,11 +648,17 @@ function generateReport(soldiers, dateString, deployment) {
     if (us.length === 0) continue;
     const base = us.filter(s => s.status === "BASE");
     const home = us.filter(s => s.status === "HOME");
+    const none = us.filter(s => s.status === "UNREPORTED");
     const label = s => esc(s.name) + (s.note ? ` (${esc(s.note)})` : "");
     const list = arr => arr.length ? arr.map(s => "• " + label(s)).join("\n") : "—";   // שם בכל שורה
     r += `⬛ <b>${esc(u)}</b> (${base.length}/${us.length})\n`;
+    if (base.length + home.length === 0) {                 // המחלקה כולה לא דווחה
+      r += `❓ <b>לא דווח</b> (${none.length})\n\n`;
+      continue;
+    }
     r += `🏡 בבסיס (${base.length}):\n${list(base)}\n`;
     if (home.length) r += `🏠 בבית (${home.length}):\n${list(home)}\n`;
+    if (none.length) r += `❓ לא דווח (${none.length}):\n${list(none)}\n`;
     r += "\n";
   }
 
@@ -665,7 +671,9 @@ function generateReport(soldiers, dateString, deployment) {
   if (lines.length) r += `${DIV}\n⚡ <b>שיבוץ משימות</b>\n${lines.join("\n")}\n\n`;
 
   const bAll = soldiers.filter(s => s.status === "BASE").length;
-  r += `${DIV}\n📊 <b>סה"כ נוכחים: ${bAll}/${soldiers.length}</b>`;
+  const hAll = soldiers.filter(s => s.status === "HOME").length;
+  const nAll = soldiers.filter(s => s.status === "UNREPORTED").length;
+  r += `${DIV}\n📊 <b>נוכחים: ${bAll} | בבית: ${hAll} | לא דווח: ${nAll}</b>\nסה"כ מצבה: ${soldiers.length}`;
   return r;
 }
 
@@ -840,7 +848,7 @@ function main() {
           const u = (daily || []).find(x => x.name === s.name);
           const rawM = u ? u.mission : "ללא משימה";
           const isNote = typeof rawM === "string" && rawM.startsWith(NOTE_PREFIX);
-          return { name: s.name, unit: s.unit, status: u ? u.status : "BASE",
+          return { name: s.name, unit: s.unit, status: u ? u.status : "UNREPORTED",
             mission: isNote ? "ללא משימה" : rawM, note: isNote ? rawM.slice(NOTE_PREFIX.length) : "" };
         });
         return send(chatId, generateReport(merged, date, DEPLOYMENT_NAME));
