@@ -133,10 +133,14 @@ function resolveDate(text, todayIso) {
 
 // האם יש בטקסט ציון תאריך מפורש (מחר/היום/יום ג'/31.10)?
 function hasExplicitDate(t) {
+  return hasWordDate(t) || /\d{1,2}[\/.]\d{1,2}/.test(t);
+}
+// ציון תאריך במילים בלבד (מחר/היום/יום ג') - קובע את יעד הדיווח.
+// תאריך מספרי מוטבע בכותרת (27.10) לא נחשב - דיווח תמיד למחר אלא אם נאמר אחרת במילים.
+function hasWordDate(t) {
   return /מחרתיים|מחר|אתמול|היום/.test(t)
     || /יום (ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)/.test(t)
-    || /ב(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)(?![א-ת])/.test(t)
-    || /\d{1,2}[\/.]\d{1,2}/.test(t);
+    || /ב(ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת)(?![א-ת])/.test(t);
 }
 
 // תווית תאריך קריאה: "מחר, יום ג' 29.10" / "היום, ..." / "יום ג' 29.10"
@@ -591,7 +595,10 @@ function parseCommand(text, roster, isRosterCmd) {
   const date = resolveDate(raw, today);
   // דיווח = תמיד למחר, אלא אם צוין תאריך מפורש. "היום" = תיקון (דורש אישור).
   const saysToday = hw(raw, "היום");
-  const reportDate = saysToday ? today : (hasExplicitDate(raw) ? date : addDays(today, 1));
+  // דיווח = תמיד מחר. רק תאריך-במילים (מחר/יום ג') קובע אחרת; תאריך מספרי מוטבע בכותרת מתעלמים ממנו.
+  const reportDate = saysToday ? today : (hasWordDate(raw) ? date : addDays(today, 1));
+  // הצגה/איפוס: ברירת מחדל מחר (הדוח שבונים); תאריך מפורש (כולל 31.10) או "היום" מכובדים.
+  const viewDate = saysToday ? today : (hasExplicitDate(raw) ? date : addDays(today, 1));
 
   // ניהול מצבת (הוספה/הסרה/שינוי שם) - לפי מילות מפתח מפורשות
   const rosterOp = detectRosterOp(raw, roster);
@@ -604,7 +611,7 @@ function parseCommand(text, roster, isRosterCmd) {
   const firstWord = stripPunct(clean).split(/\s+/)[0] || "";
   const isShortCmd = !clean.includes("\n") && stripPunct(clean).split(/\s+/).length <= 4;
   const clearIntent = CLEAR_WORDS.includes(firstWord) || (isShortCmd && CLEAR_WORDS.some(w => hw(clean, w)));
-  if (clearIntent && (clean.includes("דוח") || clean.includes('דו"ח'))) return { type: "clear", targetDate: date };
+  if (clearIntent && (clean.includes("דוח") || clean.includes('דו"ח'))) return { type: "clear", targetDate: viewDate };
 
   // עדכון גורף
   const bulk = detectBulk(clean);
@@ -619,7 +626,7 @@ function parseCommand(text, roster, isRosterCmd) {
 
   // הצגת דוח
   if (/דוח|דו"ח|מצב|סטטוס/.test(clean) || hw(clean, "הצג") || hw(clean, "שלח"))
-    return { type: "show_report", targetDate: date };
+    return { type: "show_report", targetDate: viewDate };
 
   return { type: "unknown" };
 }
@@ -863,7 +870,7 @@ function main() {
       if (ai.type === "clear") {
         const date = ai.targetDate || todayDate;
         await supabase.from("report_data").delete().eq("report_date", date);
-        return send(chatId, `🧹 <b>דוח 1 לתאריך ${date} [${esc(DEPLOYMENT_NAME)}] אופס!</b>`);
+        return send(chatId, `🧹 <b>דוח 1 ל${esc(dateLabel(date))} אופס.</b>`);
       }
 
       if (ai.type === "bulk_update") {
@@ -985,7 +992,7 @@ module.exports = {
   detectStatus, detectMission, matchSoldiers, tokensToNames, extractUpdates, detectBulk,
   detectRosterOp, parseCommand, buildActionFromLLM, needsLLM, generateReport, passesGatekeeper, missionMatch, VALID_UNITS, MISSIONS,
   noteOf, emojiStatus, stripEmojis, parseReportLine, extractUpdatesLines, extractByScan, extractNamesFromRun,
-  hasExplicitDate, dateLabel
+  hasExplicitDate, hasWordDate, dateLabel
 };
 
 if (require.main === module) main();
