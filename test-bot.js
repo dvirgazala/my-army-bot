@@ -32,7 +32,10 @@ console.log("🔍 בדיקות מנוע הפענוח הדטרמיניסטי\n");
 console.log("🧪 שומר הסף");
 eq("חולין נחסם", B.passesGatekeeper("משה בבית"), false);
 eq("כוכבית עוברת", B.passesGatekeeper("*משה בבית"), true);
-eq("דוח עובר", B.passesGatekeeper("שלח דוח 1"), true);
+eq("דוח בלי כוכבית נחסם", B.passesGatekeeper("שלח דוח 1"), false);
+eq("'דוח' בשיחה רגילה נחסם", B.passesGatekeeper("מתי שולחים דוח?"), false);
+eq("פקודת / עוברת", B.passesGatekeeper("/id"), true);
+eq("דיווח עם כוכבית עובר", B.passesGatekeeper("*דוח 1"), true);
 
 // --- תאריכים ---
 console.log("\n🧪 תאריכים");

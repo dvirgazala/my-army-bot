@@ -707,11 +707,10 @@ function generateReport(soldiers, dateString, deployment) {
   return r;
 }
 
+// בקבוצה: רק הודעות שמתחילות ב-* (דיווח/פקודה) או / (פקודה) נקלטות.
+// שאר השיחה בקבוצה נחסמת כדי שהבוט לא יגיב לדיבורים רגילים.
 function passesGatekeeper(text) {
-  return text.startsWith("*")
-    || ((text.includes("בבית:") || text.includes("בבסיס:")) && text.includes("\n"))
-    || text.includes("דוח")
-    || text.startsWith("/");
+  return text.startsWith("*") || text.startsWith("/");
 }
 
 // ==========================================
